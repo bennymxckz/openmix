@@ -379,6 +379,17 @@ bool UsbipServer::handleStreaming(SOCKET s, VirtualEndpoint& ep) {
             in.resize(bytes);
             if (samples) {
                 if (scratch.size() < samples) scratch.resize(samples);
+
+                // Bound the backlog before reading. The microphone's clock and
+                // our pacing clock are independent, so without this any drift
+                // accumulates in one direction until the ring is full and stays
+                // pinned there -- heard as speech arriving hundreds of ms late.
+                // Leave one target's worth behind to absorb jitter.
+                constexpr size_t kTargetMs = 12;
+                const size_t target =
+                    (usbaudio::kSampleRate * usbaudio::kChannels * kTargetMs) / 1000;
+                ep.source->trimTo(target + samples);
+
                 ep.source->read(scratch.data(), samples);
                 const float g = ep.device->linearGain();
                 int16_t* pcm = reinterpret_cast<int16_t*>(in.data());

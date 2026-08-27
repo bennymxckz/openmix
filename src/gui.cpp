@@ -301,10 +301,18 @@ void drawUi() {
             ImGui::AlignTextToFramePadding();
             const bool attached = i < eps.size() && eps[i]->attached.load();
             const double r = g_engine.rate(i);
+            const double backlogMs = 1000.0 * static_cast<double>(b.ring.readable()) /
+                                     static_cast<double>(kChannels * kSampleRate);
             if (!attached) {
                 ImGui::TextColored(ImVec4(0.9f, 0.45f, 0.4f, 1.0f), "not connected");
             } else if (r > 1000.0) {
-                ImGui::TextDisabled("%.1f kHz", r / 1000.0);
+                // Backlog is latency. Flag it when it climbs past a sane budget.
+                if (backlogMs > 60.0) {
+                    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.3f, 1.0f),
+                                       "%.1f kHz  %.0f ms", r / 1000.0, backlogMs);
+                } else {
+                    ImGui::TextDisabled("%.1f kHz  %.0f ms", r / 1000.0, backlogMs);
+                }
             } else {
                 ImGui::TextDisabled("idle");
             }

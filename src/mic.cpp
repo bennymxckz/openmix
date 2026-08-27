@@ -216,8 +216,10 @@ void MicCapture::run() {
                         AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
                         AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
 
+    // 0 asks for the engine's own period (typically 10 ms) rather than adding
+    // a second buffer on top of it.
     if (FAILED(client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags,
-                                  200000 /* 20 ms */, 0, &wfx.Format, nullptr))) {
+                                  0, 0, &wfx.Format, nullptr))) {
         bail("Initialize failed on " + deviceName_);
         return;
     }
