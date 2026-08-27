@@ -33,28 +33,36 @@ anti-cheat is untouched.
 
 ## Build
 
-MSVC + Windows SDK, from a developer prompt:
+MSVC + Windows SDK, from a developer prompt. Dear ImGui is fetched by CMake,
+so the first configure needs a network connection.
 
     cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
     cmake --build build
 
+Produces two binaries: `openmix.exe`, the mixer window, and `openmix-cli.exe`,
+a console build kept for debugging and headless use.
+
 ## Run
 
-    build\openmix.exe --out "HyperX Cloud Alpha S Game"
+    build\openmix.exe
 
-The three devices are plugged in automatically at startup and unplug when
-openmix exits. `--out` picks where the monitor mix goes; openmix's own
-devices are never selectable as the output, so it cannot feed back into
-itself.
+A mixer window with a level meter, volume fader and mute per channel. The
+devices are plugged in at startup and unplug when openmix exits.
 
-    build\openmix.exe --list-devices        show output devices
-    build\openmix.exe --mic "Yeti"          pick the microphone source
-    build\openmix.exe --no-mic              skip the virtual microphone
-    build\openmix.exe --bus Game --bus Chat --bus Media --bus Browser
-    build\openmix.exe --loopback            tap apps instead (no devices)
+Closing the window or minimising it parks openmix in the tray with audio
+still running. Left-click the tray icon to show or hide the mixer;
+right-click for Quit. While hidden it stops rendering entirely.
+
+### Console build
+
+    build\openmix-cli.exe --out "HyperX Cloud Alpha S Game"
+    build\openmix-cli.exe --list-devices        show output devices
+    build\openmix-cli.exe --mic "Yeti"          pick the microphone source
+    build\openmix-cli.exe --no-mic              skip the virtual microphone
+    build\openmix-cli.exe --bus Game --bus Chat --bus Media --bus Browser
+    build\openmix-cli.exe --loopback            tap apps instead (no devices)
 
 Keys: `1`-`9` select bus, `+`/`-` gain, `m` mute, `q` quit.
-A `*` after a bus name means its device is not currently attached.
 
 ## Setting it up
 
@@ -73,7 +81,9 @@ control transfers, isochronous OUT), UAC1 descriptors with a feature unit for
 host volume/mute, per-bus gain and mute, peak meters, monitor mixing, output
 device selection, auto attach/detach, and a driverless loopback mode.
 
-Not yet: per-bus EQ and microphone processing, a GUI, and adaptive resampling
+Not yet: per-bus EQ and microphone processing, settings persistence (the GUI
+cannot yet choose devices - use the console build's flags), autostart at
+login, an installer, and adaptive resampling
 to correct long-run clock drift between the USB packet clock and the render
 device. Expect an occasional glitch on multi-hour sessions until that lands.
 
