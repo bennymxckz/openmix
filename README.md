@@ -78,4 +78,8 @@ packet clock and the render device.
 
 ## License
 
-TBD. Linking GPL DSP plugins is fine; vendoring their source is not.
+MIT -- see [LICENSE](LICENSE). Fork it, ship it, make it yours.
+
+Note for contributors: loading GPL or LGPL DSP plugins through a published
+plugin ABI at the user's direction is fine. Vendoring their source into this
+tree is not, and would change the licence of the whole project.
