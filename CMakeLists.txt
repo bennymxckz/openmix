@@ -8,6 +8,7 @@ add_executable(openmix
     src/main.cpp
     src/loopback.cpp
     src/output.cpp
+    src/mic.cpp
     src/usb_audio.cpp
     src/usbip_server.cpp
 )

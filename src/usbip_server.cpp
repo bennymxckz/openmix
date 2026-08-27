@@ -58,6 +58,7 @@ void fillExported(const VirtualEndpoint& ep, ExportedDevice& d) {
 }
 
 // The two interfaces we expose, in the order the config descriptor lists them.
+// Identical for playback and capture: the direction lives in the endpoint.
 void writeInterfaces(std::vector<uint8_t>& v) {
     // AudioControl
     v.push_back(0x01); v.push_back(0x01); v.push_back(0x00); v.push_back(0x00);
@@ -369,8 +370,55 @@ bool UsbipServer::handleStreaming(SOCKET s, VirtualEndpoint& ep) {
                 d.actualLength = d.length;
                 d.status = 0;
             }
+        } else if (ep.source) {
+            // Isochronous IN: the host is asking for microphone audio. Always
+            // return full-length packets -- a short packet is read as a glitch,
+            // and the ring zero-fills any shortfall for us.
+            const size_t bytes = bufLen;
+            const size_t samples = bytes / 2;
+            in.resize(bytes);
+            if (samples) {
+                if (scratch.size() < samples) scratch.resize(samples);
+                ep.source->read(scratch.data(), samples);
+                const float g = ep.device->linearGain();
+                int16_t* pcm = reinterpret_cast<int16_t*>(in.data());
+                for (size_t i = 0; i < samples; ++i) {
+                    float v = scratch[i] * g;
+                    if (v > 1.0f) v = 1.0f;
+                    if (v < -1.0f) v = -1.0f;
+                    pcm[i] = static_cast<int16_t>(v * 32767.0f);
+                }
+                ep.framesIn.fetch_add(samples / usbaudio::kChannels, std::memory_order_relaxed);
+            }
+
+            for (auto& d : iso) {
+                d.actualLength = d.length;
+                d.status = 0;
+            }
+            r.actualLength = static_cast<int32_t>(bytes);
+
+            // Same virtual playout clock as the OUT path: deliver at real time
+            // or the host will drain us as fast as the socket allows.
+            if (samples) {
+                const unsigned long long frames = samples / usbaudio::kChannels;
+                framesAccepted += frames;
+                LARGE_INTEGER now{};
+                ::QueryPerformanceCounter(&now);
+                if (!clockRunning) { base = now; clockRunning = true; }
+                const double elapsed =
+                    static_cast<double>(now.QuadPart - base.QuadPart) / static_cast<double>(qpf.QuadPart);
+                const double due =
+                    static_cast<double>(framesAccepted) / usbaudio::kSampleRate - kLeadSeconds;
+                const double wait = due - elapsed;
+                if (wait > 0.0) {
+                    ::Sleep(static_cast<DWORD>(wait * 1000.0));
+                } else if (wait < -kResyncSeconds) {
+                    base = now;
+                    framesAccepted = 0;
+                }
+            }
         } else {
-            // No IN endpoints are exposed; report a well-formed empty transfer.
+            // No source attached; report a well-formed empty transfer.
             r.actualLength = 0;
         }
 

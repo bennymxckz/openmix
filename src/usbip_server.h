@@ -20,7 +20,8 @@
 // One exported device, paired with the bus it feeds.
 struct VirtualEndpoint {
     std::unique_ptr<usbaudio::Device> device;
-    FloatRing* sink = nullptr;
+    FloatRing* sink = nullptr;       // playback: where host audio lands
+    FloatRing* source = nullptr;     // capture: where we take audio from
     std::string busid;               // e.g. "1-1"
     std::atomic<bool> attached{false};
     std::atomic<unsigned long long> framesIn{0};

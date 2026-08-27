@@ -44,6 +44,9 @@ enum : uint8_t {
     UAC_GET_RES = 0x84,
 };
 
+// Playback devices sink audio from the host; capture devices source it.
+enum class Direction { Playback, Capture };
+
 struct SetupPacket {
     uint8_t  bmRequestType;
     uint8_t  bRequest;
@@ -60,7 +63,15 @@ struct SetupPacket {
 // manipulates over the control endpoint.
 class Device {
 public:
-    Device(std::string productName, uint16_t productId);
+    Device(std::string productName, uint16_t productId,
+           Direction dir = Direction::Playback);
+
+    // Identity derived from the name alone, so a device keeps the same USB
+    // VID/PID and serial no matter how the bus list changes around it.
+    static uint16_t stableProductId(const std::string& name);
+
+    Direction direction() const { return dir_; }
+    bool isCapture() const { return dir_ == Direction::Capture; }
 
     const std::string& productName() const { return productName_; }
     uint16_t productId() const { return productId_; }
@@ -88,6 +99,7 @@ private:
 
     std::string productName_;
     uint16_t productId_;
+    Direction dir_ = Direction::Playback;
     std::vector<uint8_t> devDesc_;
     std::vector<uint8_t> cfgDesc_;
 

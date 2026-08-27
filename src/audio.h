@@ -59,6 +59,9 @@ private:
 
 struct Bus {
     std::string name;
+    // Capture buses feed a virtual microphone rather than the monitor mix, so
+    // the mixer must not consume their ring.
+    bool isCapture = false;
     float gain = 1.0f;
     bool muted = false;
     FloatRing ring;
@@ -74,6 +77,30 @@ struct RenderDevice {
     bool isOpenmix = false;
 };
 std::vector<RenderDevice> listRenderDevices();
+std::vector<RenderDevice> listCaptureDevices();
+
+// Pulls audio from a real input device into a ring, which the USB capture
+// endpoint then serves to whichever application selected "openmix Mic".
+class MicCapture {
+public:
+    ~MicCapture();
+    bool start(FloatRing* sink, const std::string& deviceMatch, std::string& err);
+    void stop();
+    const std::string& deviceName() const { return deviceName_; }
+
+private:
+    void run();
+    static DWORD WINAPI thunk(LPVOID self);
+
+    FloatRing* sink_ = nullptr;
+    std::string deviceMatch_;
+    std::string deviceName_;
+    std::string startErr_;
+    HANDLE thread_ = nullptr;
+    HANDLE stopEvt_ = nullptr;
+    HANDLE readyEvt_ = nullptr;
+    bool ok_ = false;
+};
 
 class MonitorOutput {
 public:

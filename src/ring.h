@@ -84,6 +84,19 @@ public:
         return take;
     }
 
+    // Consumer side for the capture path: copies out rather than mixing, and
+    // zero-fills any shortfall so an IN packet is always full length.
+    size_t read(float* dst, size_t n) {
+        if (cap_ == 0) { std::fill(dst, dst + n, 0.0f); return 0; }
+        size_t r = r_.load(std::memory_order_relaxed);
+        size_t avail = w_.load(std::memory_order_acquire) - r;
+        size_t take = std::min(n, avail);
+        for (size_t i = 0; i < take; ++i) dst[i] = buf_[(r + i) & mask_];
+        if (take < n) std::fill(dst + take, dst + n, 0.0f);
+        r_.store(r + take, std::memory_order_release);
+        return take;
+    }
+
     // Bound the backlog. Capture and render run on independent clocks, so
     // without this the queue grows until latency is audible.
     void trimTo(size_t keep) {

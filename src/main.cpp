@@ -63,6 +63,8 @@ void usage() {
         "  --bus NAME=a.exe,b.exe   bus fed by those apps (loopback mode)\n"
         "  --bus NAME=*    catch-all bus (loopback mode)\n"
         "  --out NAME      send the monitor mix to this output device\n"
+        "  --mic NAME      source the virtual microphone from this input\n"
+        "  --no-mic        do not create the openmix Mic device\n"
         "  --list-devices  show available output devices and exit\n"
         "  --port N        USB/IP listen port (default 3240)\n"
         "  -v              log attach/detach and control traffic\n"
@@ -125,7 +127,9 @@ int main(int argc, char** argv) {
     bool verbose = false;
     bool loopbackMode = false;
     bool listDevices = false;
+    bool noMic = false;
     std::string outMatch;
+    std::string micMatch;
     uint16_t port = 3240;
 
     for (int i = 1; i < argc; ++i) {
@@ -136,6 +140,8 @@ int main(int argc, char** argv) {
         if (a == "--endpoints") { loopbackMode = false; continue; }
         if (a == "--list-devices") { listDevices = true; continue; }
         if (a == "--out" && i + 1 < argc) { outMatch = argv[++i]; continue; }
+        if (a == "--mic" && i + 1 < argc) { micMatch = argv[++i]; continue; }
+        if (a == "--no-mic") { noMic = true; continue; }
         if (a == "--port" && i + 1 < argc) {
             port = static_cast<uint16_t>(std::atoi(argv[++i]));
             continue;
@@ -177,6 +183,12 @@ int main(int argc, char** argv) {
                 b.name = n;
                 buses.push_back(std::move(b));
             }
+            if (!noMic) {
+                Bus m;
+                m.name = "Mic";
+                m.isCapture = true;
+                buses.push_back(std::move(m));
+            }
         }
     }
 
@@ -208,9 +220,12 @@ int main(int argc, char** argv) {
     if (!loopbackMode) {
         for (size_t i = 0; i < buses.size(); ++i) {
             auto ep = std::make_unique<VirtualEndpoint>();
+            const bool cap = buses[i].isCapture;
+            const std::string devName = "openmix " + buses[i].name;
             ep->device = std::make_unique<usbaudio::Device>(
-                "openmix " + buses[i].name, static_cast<uint16_t>(0x0200 + i));
-            ep->sink = &buses[i].ring;
+                devName, usbaudio::Device::stableProductId(devName),
+                cap ? usbaudio::Direction::Capture : usbaudio::Direction::Playback);
+            if (cap) ep->source = &buses[i].ring; else ep->sink = &buses[i].ring;
             ep->busid = "1-" + std::to_string(i + 1);
             endpoints.push_back(std::move(ep));
         }
@@ -255,6 +270,20 @@ int main(int argc, char** argv) {
                         "Point each app at one, and set your real headphones as the\n"
                         "default device so the monitor mix lands there.\n"
                         "Devices unplug automatically when openmix exits.\n");
+        }
+    }
+
+    MicCapture mic;
+    if (!loopbackMode && !noMic) {
+        for (auto& b : buses) {
+            if (!b.isCapture) continue;
+            std::string micErr;
+            if (mic.start(&b.ring, micMatch, micErr)) {
+                std::printf("mic <- %s\n", mic.deviceName().c_str());
+            } else {
+                std::printf("mic capture unavailable: %s\n", micErr.c_str());
+            }
+            break;
         }
     }
 
@@ -387,6 +416,7 @@ int main(int argc, char** argv) {
 
     std::printf("\nstopping...\n");
     ::timeEndPeriod(1);
+    mic.stop();
     usbip.stop();
     for (auto& b : buses) b.captures.clear();
     out.stop();

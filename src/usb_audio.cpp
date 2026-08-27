@@ -1,5 +1,7 @@
 #include "usb_audio.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 
@@ -46,8 +48,10 @@ constexpr int16_t kVolRes = 256;
 
 }  // namespace
 
-Device::Device(std::string productName, uint16_t productId)
-    : productName_(std::move(productName)), productId_(productId) {
+Device::Device(std::string productName, uint16_t productId, Direction dir)
+    : productName_(std::move(productName)), productId_(productId), dir_(dir) {
+
+    const bool capture = (dir_ == Direction::Capture);
 
     // ---- device descriptor ----
     devDesc_.reserve(18);
@@ -76,10 +80,11 @@ Device::Device(std::string productName, uint16_t productId)
     u8(ac, 1);                // bInCollection
     u8(ac, 1);                // baInterfaceNr[0] -> streaming interface
 
-    // Input terminal: USB streaming in
+    // Input terminal. On playback this is the USB stream arriving from the
+    // host; on capture it is the physical microphone.
     u8(ac, 12); u8(ac, DT_CS_INTERFACE); u8(ac, 0x02);
     u8(ac, ID_INPUT_TERMINAL);
-    le16(ac, 0x0101);         // USB Streaming
+    le16(ac, capture ? 0x0201 : 0x0101);   // Microphone : USB Streaming
     u8(ac, 0);                // bAssocTerminal
     u8(ac, kChannels);
     le16(ac, 0x0003);         // front left + front right
@@ -96,10 +101,10 @@ Device::Device(std::string productName, uint16_t productId)
     u8(ac, 0x00);             // right
     u8(ac, 0);                // iFeature
 
-    // Output terminal: speaker
+    // Output terminal. Mirror image of the input terminal.
     u8(ac, 9); u8(ac, DT_CS_INTERFACE); u8(ac, 0x03);
     u8(ac, ID_OUTPUT_TERMINAL);
-    le16(ac, 0x0301);         // Speaker
+    le16(ac, capture ? 0x0101 : 0x0301);   // USB Streaming : Speaker
     u8(ac, 0);                // bAssocTerminal
     u8(ac, ID_FEATURE_UNIT);
     u8(ac, 0);                // iTerminal
@@ -127,9 +132,10 @@ Device::Device(std::string productName, uint16_t productId)
     u8(body, 1); u8(body, 1); u8(body, 1);
     u8(body, CLASS_AUDIO); u8(body, SUBCLASS_STREAM); u8(body, 0); u8(body, 0);
 
-    // AS general
+    // AS general: bTerminalLink names the terminal carrying the USB stream,
+    // which is the input terminal on playback and the output terminal on capture.
     u8(body, 7); u8(body, DT_CS_INTERFACE); u8(body, 0x01);
-    u8(body, ID_INPUT_TERMINAL);
+    u8(body, capture ? ID_OUTPUT_TERMINAL : ID_INPUT_TERMINAL);
     u8(body, 1);              // bDelay
     le16(body, 0x0001);       // PCM
 
@@ -142,10 +148,12 @@ Device::Device(std::string productName, uint16_t productId)
     u8(body, 1);              // one discrete sample rate
     le24(body, kSampleRate);
 
-    // Isochronous OUT endpoint (audio endpoint descriptors are 9 bytes)
+    // Isochronous endpoint (audio endpoint descriptors are 9 bytes, not 7).
+    // Playback is adaptive: the host adjusts to our consumption rate. Capture
+    // is asynchronous: we own the clock and the host takes what we produce.
     u8(body, 9); u8(body, DT_ENDPOINT);
-    u8(body, 0x01);           // OUT, endpoint 1
-    u8(body, 0x09);           // isochronous, adaptive
+    u8(body, capture ? 0x81 : 0x01);        // IN ep 1 : OUT ep 1
+    u8(body, capture ? 0x05 : 0x09);        // iso+async : iso+adaptive
     le16(body, kPacketBytes);
     u8(body, 1);              // bInterval: every frame
     u8(body, 0);              // bRefresh
@@ -175,6 +183,20 @@ float Device::linearGain() const {
     return std::pow(10.0f, (static_cast<float>(volume_) / 256.0f) / 20.0f);
 }
 
+// A device's USB identity must depend only on its name. Deriving it from the
+// bus index means adding or removing a bus renumbers the others, and Windows
+// then registers brand-new devices ("2- openmix Chat") instead of recognising
+// the existing ones -- losing per-app output assignments every time.
+uint16_t Device::stableProductId(const std::string& name) {
+    uint32_t h = 2166136261u;                 // FNV-1a
+    for (unsigned char c : name) {
+        h ^= c;
+        h *= 16777619u;
+    }
+    // Keep it out of 0x0000 and clear of the low range usbip tooling prints.
+    return static_cast<uint16_t>(0x1000 | (h & 0x0FFF));
+}
+
 std::vector<uint8_t> Device::stringDescriptor(uint8_t index) const {
     std::vector<uint8_t> d;
     if (index == 0) {
@@ -185,7 +207,15 @@ std::vector<uint8_t> Device::stringDescriptor(uint8_t index) const {
     switch (index) {
         case 1: s = "openmix"; break;
         case 2: s = productName_; break;
-        case 3: s = "OMX-" + std::to_string(productId_); break;
+        case 3: {
+            // Serial is the stable half of the device's identity, so it must
+            // also come from the name rather than any positional value.
+            s = productName_;
+            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+                return c == ' ' ? '-' : static_cast<char>(::tolower(c));
+            });
+            break;
+        }
         default: return d;
     }
     d.push_back(static_cast<uint8_t>(2 + s.size() * 2));

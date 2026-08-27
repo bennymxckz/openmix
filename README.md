@@ -4,8 +4,8 @@ An open-source per-application audio mixer for Windows, in the spirit of
 SteelSeries Sonar but without the bundled clipping software.
 
 openmix publishes its own playback devices -- **openmix Game**, **openmix
-Chat**, **openmix Media** -- that any app can select in Windows sound
-settings. It mixes them with independent gain and sends the monitor mix to
+Chat**, **openmix Media** -- plus a virtual microphone, **openmix Mic**, that
+any app can select in Windows sound settings. It mixes them with independent gain and sends the monitor mix to
 your real headphones.
 
 ## How it works, and why that matters
@@ -48,6 +48,8 @@ devices are never selectable as the output, so it cannot feed back into
 itself.
 
     build\openmix.exe --list-devices        show output devices
+    build\openmix.exe --mic "Yeti"          pick the microphone source
+    build\openmix.exe --no-mic              skip the virtual microphone
     build\openmix.exe --bus Game --bus Chat --bus Media --bus Browser
     build\openmix.exe --loopback            tap apps instead (no devices)
 
@@ -71,10 +73,12 @@ control transfers, isochronous OUT), UAC1 descriptors with a feature unit for
 host volume/mute, per-bus gain and mute, peak meters, monitor mixing, output
 device selection, auto attach/detach, and a driverless loopback mode.
 
-Not yet: per-bus EQ and mic processing, a virtual microphone (needs a UAC
-capture interface -- the same technique, IN endpoints instead of OUT), a GUI,
-and adaptive resampling to correct long-run clock drift between the USB
-packet clock and the render device.
+Not yet: per-bus EQ and microphone processing, a GUI, and adaptive resampling
+to correct long-run clock drift between the USB packet clock and the render
+device. Expect an occasional glitch on multi-hour sessions until that lands.
+
+The microphone currently passes your input device through unprocessed and is
+not folded into the monitor mix, so you will not hear yourself.
 
 ## License
 
