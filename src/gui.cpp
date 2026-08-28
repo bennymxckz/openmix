@@ -552,7 +552,7 @@ void drawEffects(Bus& b) {
     tip("Reset every band to no change");
 
     ImGui::Spacing();
-    drawEqCurve(b.eq, ImVec2(-FLT_MIN, 96.0f * g_scale));
+    drawEqCurve(b.eq, ImVec2(ImGui::GetContentRegionAvail().x, 96.0f * g_scale));
     ImGui::Spacing();
 
     ImGui::BeginDisabled(!b.eq.enabled);
@@ -584,13 +584,14 @@ void drawEffects(Bus& b) {
         tip("How much the gate is turning the microphone down right now");
 
         ImGui::BeginDisabled(!b.mic.gate.enabled);
-        ImGui::SetNextItemWidth(-FLT_MIN);
+        const float lbl = -150.0f * g_scale;   // room for the label
+        ImGui::SetNextItemWidth(lbl);
         changed |= ImGui::SliderFloat("Opens above", &b.mic.gate.thresholdDb,
                                       -80.0f, 0.0f, "%.0f dB");
-        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::SetNextItemWidth(lbl);
         changed |= ImGui::SliderFloat("Stays open for", &b.mic.gate.holdMs,
                                       0.0f, 500.0f, "%.0f ms");
-        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::SetNextItemWidth(lbl);
         changed |= ImGui::SliderFloat("Closes over", &b.mic.gate.releaseMs,
                                       10.0f, 1000.0f, "%.0f ms");
         ImGui::EndDisabled();
@@ -606,18 +607,18 @@ void drawEffects(Bus& b) {
         tip("How much the compressor is turning the microphone down right now");
 
         ImGui::BeginDisabled(!b.mic.comp.enabled);
-        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::SetNextItemWidth(lbl);
         changed |= ImGui::SliderFloat("Squeezes above", &b.mic.comp.thresholdDb,
                                       -48.0f, 0.0f, "%.0f dB");
-        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::SetNextItemWidth(lbl);
         changed |= ImGui::SliderFloat("By", &b.mic.comp.ratio, 1.0f, 12.0f, "%.1f : 1");
-        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::SetNextItemWidth(lbl);
         changed |= ImGui::SliderFloat("Reacts in", &b.mic.comp.attackMs,
                                       0.5f, 50.0f, "%.1f ms");
-        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::SetNextItemWidth(lbl);
         changed |= ImGui::SliderFloat("Recovers in", &b.mic.comp.releaseMs,
                                       20.0f, 800.0f, "%.0f ms");
-        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::SetNextItemWidth(lbl);
         changed |= ImGui::SliderFloat("Then lift by", &b.mic.comp.makeupDb,
                                       0.0f, 24.0f, "%+.1f dB");
         ImGui::EndDisabled();
@@ -780,7 +781,17 @@ void drawStrip(size_t index, Bus& b, bool attached, float rate, float height) {
     }
     tip(b.isCapture ? "Equaliser, noise gate and compressor" : "Equaliser");
 
-    ImGui::SetNextWindowSize(ImVec2(430.0f * g_scale, 0));
+    // BeginPopup auto-resizes to its content and ignores a maximum, so a tall
+    // panel runs off the bottom of the screen instead of scrolling. Give the
+    // microphone panel an explicit height; the playback one is short enough to
+    // size itself.
+    const float fxW = 460.0f * g_scale;
+    if (b.isCapture) {
+        const float room = ImGui::GetMainViewport()->WorkSize.y - 80.0f * g_scale;
+        ImGui::SetNextWindowSize(ImVec2(fxW, (std::min)(620.0f * g_scale, room)));
+    } else {
+        ImGui::SetNextWindowSize(ImVec2(fxW, 0));
+    }
     if (ImGui::BeginPopup("fx")) {
         drawEffects(b);
         ImGui::EndPopup();
@@ -1167,7 +1178,9 @@ void applyStyle() {
     c[ImGuiCol_CheckMark]        = theme::toVec(theme::kAccent);
     c[ImGuiCol_Separator]        = theme::toVec(theme::kLine);
     c[ImGuiCol_ScrollbarBg]      = ImVec4(0, 0, 0, 0);
-    c[ImGuiCol_ScrollbarGrab]    = theme::toVec(theme::kPanelHi);
+    c[ImGuiCol_ScrollbarGrab]        = theme::toVec(theme::kLine);
+    c[ImGuiCol_ScrollbarGrabHovered] = theme::toVec(theme::kPanelHi);
+    c[ImGuiCol_ScrollbarGrabActive]  = theme::toVec(theme::kAccent);
     c[ImGuiCol_TableHeaderBg]    = theme::toVec(theme::kPanel);
     c[ImGuiCol_TableRowBgAlt]    = ImVec4(1, 1, 1, 0.02f);
 }
