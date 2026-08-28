@@ -93,9 +93,13 @@ control transfers, isochronous OUT), UAC1 descriptors with a feature unit for
 host volume/mute, per-bus gain and mute, peak meters, monitor mixing, output
 device selection, auto attach/detach, and a driverless loopback mode.
 
-Not yet: per-bus EQ and microphone processing, settings persistence (the GUI
-cannot yet choose devices - use the console build's flags), autostart at
-login, an installer, and adaptive resampling
+Settings live in `%APPDATA%\openmix\config.ini` as plain text -- device
+choices, per-channel volume and mute -- written whenever you change something
+rather than only at exit. "Start with Windows" registers a per-user HKCU Run
+entry that launches openmix straight to the tray.
+
+Not yet: per-bus EQ and microphone processing, an installer, and adaptive
+resampling
 to correct long-run clock drift between the USB packet clock and the render
 device. Expect an occasional glitch on multi-hour sessions until that lands.
 

@@ -19,6 +19,7 @@
 #include "backends/imgui_impl_dx11.h"
 
 #include "engine.h"
+#include "config.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
@@ -43,6 +44,8 @@ std::string g_startError;
 std::vector<RenderDevice> g_outDevices;
 std::vector<RenderDevice> g_micDevices;
 std::string g_deviceError;
+Config g_config;
+bool g_autostart = false;
 
 void createRenderTarget() {
     ID3D11Texture2D* back = nullptr;
@@ -216,6 +219,25 @@ void drawMeter(float peak, float width) {
     ImGui::Dummy(size);
 }
 
+// Settings are written on change rather than only at exit, so a crash or a
+// forced quit does not lose them.
+void saveSettings() {
+    g_config.set("output", g_engine.monitorDevice());
+    g_config.set("mic", g_engine.micDevice());
+    for (const auto& b : g_engine.buses()) {
+        g_config.setFloat("bus." + b.name + ".gain", b.gain);
+        g_config.setBool("bus." + b.name + ".mute", b.muted);
+    }
+    g_config.save();
+}
+
+void applySettings() {
+    for (auto& b : g_engine.buses()) {
+        b.gain  = g_config.getFloat("bus." + b.name + ".gain", 1.0f);
+        b.muted = g_config.getBool("bus." + b.name + ".mute", false);
+    }
+}
+
 void drawUi() {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
@@ -231,8 +253,10 @@ void drawUi() {
         ImGui::Spacing();
         if (ImGui::Button("Retry")) {
             EngineConfig cfg;
+            cfg.outMatch = g_config.get("output");
+            cfg.micMatch = g_config.get("mic");
             g_startError.clear();
-            g_engine.start(cfg, g_startError);
+            if (g_engine.start(cfg, g_startError)) applySettings();
         }
         ImGui::End();
         return;
@@ -252,7 +276,7 @@ void drawUi() {
             if (ImGui::Selectable(d.name.c_str(), sel)) {
                 std::string err;
                 if (!g_engine.setOutputDevice(d.name, err)) g_deviceError = err;
-                else g_deviceError.clear();
+                else { g_deviceError.clear(); saveSettings(); }
             }
             if (sel) ImGui::SetItemDefaultFocus();
         }
@@ -272,7 +296,7 @@ void drawUi() {
             if (ImGui::Selectable(d.name.c_str(), sel)) {
                 std::string err;
                 if (!g_engine.setMicDevice(d.name, err)) g_deviceError = err;
-                else g_deviceError.clear();
+                else { g_deviceError.clear(); saveSettings(); }
             }
             if (sel) ImGui::SetItemDefaultFocus();
         }
@@ -336,11 +360,15 @@ void drawUi() {
             if (ImGui::SliderFloat("##vol", &db, -60.0f, 12.0f, "%.1f dB")) {
                 b.gain = gainFromDb(db);
             }
+            if (ImGui::IsItemDeactivatedAfterEdit()) saveSettings();
 
             ImGui::TableSetColumnIndex(3);
             bool muted = b.muted;
             if (muted) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.25f, 0.22f, 1.0f));
-            if (ImGui::Button(muted ? "Muted" : "Mute", ImVec2(50, 0))) b.muted = !muted;
+            if (ImGui::Button(muted ? "Muted" : "Mute", ImVec2(50, 0))) {
+                b.muted = !muted;
+                saveSettings();
+            }
             if (muted) ImGui::PopStyleColor();
 
             ImGui::TableSetColumnIndex(4);
@@ -370,7 +398,15 @@ void drawUi() {
 
     ImGui::Spacing();
     ImGui::Separator();
-    ImGui::TextDisabled("Point apps at \"openmix ...\" in Windows sound settings.");
+
+    if (ImGui::Checkbox("Start with Windows", &g_autostart)) {
+        if (!setAutostart(g_autostart)) {
+            g_autostart = autostartEnabled();   // registry refused; show the truth
+            g_deviceError = "Could not update the startup entry.";
+        }
+    }
+
+    ImGui::TextDisabled("Point apps at the Openmix devices in Windows sound settings.");
     ImGui::TextDisabled("Closing this window keeps openmix running in the tray.");
 
     ImGui::End();
@@ -429,8 +465,15 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     BOOL dark = TRUE;
     ::DwmSetWindowAttribute(g_hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
 
-    ::ShowWindow(g_hwnd, SW_SHOWDEFAULT);
-    ::UpdateWindow(g_hwnd);
+    // Launched by the autostart entry: go straight to the tray rather than
+    // throwing a window in the user's face at every sign-in.
+    const bool startHidden = ::wcsstr(::GetCommandLineW(), L"--tray") != nullptr;
+    if (startHidden) {
+        g_inTray = true;
+    } else {
+        ::ShowWindow(g_hwnd, SW_SHOWDEFAULT);
+        ::UpdateWindow(g_hwnd);
+    }
     addTrayIcon(g_hwnd);
 
     IMGUI_CHECKVERSION();
@@ -443,10 +486,16 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     g_outDevices = listRenderDevices();
     g_micDevices = listCaptureDevices();
 
+    g_config.load();
+    g_autostart = autostartEnabled();
+
     EngineConfig cfg;
-    if (!g_engine.start(cfg, g_startError)) {
-        // Keep the window up so the user can read why and retry.
+    cfg.outMatch = g_config.get("output");
+    cfg.micMatch = g_config.get("mic");
+    if (g_engine.start(cfg, g_startError)) {
+        applySettings();
     }
+    // Otherwise the window stays up so the user can read why and retry.
 
     DWORD lastRateSample = ::GetTickCount();
     bool done = false;
@@ -498,6 +547,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
         g_occluded = (hr == DXGI_STATUS_OCCLUDED);
     }
 
+    saveSettings();
     g_engine.stop();
 
     ImGui_ImplDX11_Shutdown();

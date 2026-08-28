@@ -33,6 +33,7 @@ add_library(openmix_core STATIC
     src/usb_audio.cpp
     src/usbip_server.cpp
     src/engine.cpp
+    src/config.cpp
 )
 target_compile_definitions(openmix_core PUBLIC
     UNICODE _UNICODE
@@ -41,7 +42,7 @@ target_compile_definitions(openmix_core PUBLIC
 )
 target_include_directories(openmix_core PUBLIC src)
 target_link_libraries(openmix_core PUBLIC
-    ole32 oleaut32 uuid ksuser winmm avrt mmdevapi ws2_32
+    ole32 oleaut32 uuid ksuser winmm avrt mmdevapi ws2_32 shell32 advapi32
 )
 
 # The application: a windowed mixer that lives in the tray.
