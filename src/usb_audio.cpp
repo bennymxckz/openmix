@@ -229,8 +229,12 @@ std::vector<uint8_t> Device::stringDescriptor(uint8_t index) const {
         case STR_SERIAL: {
             // Identity, so it comes from the key -- never the display name,
             // which the user may want changed.
+            // Spaces become dashes: a serial travels into device paths and
+            // registry keys, where whitespace is a liability.
             s = "openmix-";
-            for (unsigned char c : key_) s += static_cast<char>(::tolower(c));
+            for (unsigned char c : key_) {
+                s += (c == ' ') ? '-' : static_cast<char>(::tolower(c));
+            }
             break;
         }
         default: return d;
