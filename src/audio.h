@@ -125,6 +125,9 @@ public:
     // the virtual microphone and any monitoring -- hears the same thing.
     void setEq(dsp::EqParams* eq, dsp::ChannelStrip* strip);
     void setDynamics(dsp::MicParams* mic, dsp::MicChain* chain);
+    // Optional second destination for the processed signal, so you can hear
+    // your own voice as applications will hear it.
+    void setMonitor(FloatRing* monitor);
     bool start(FloatRing* sink, const std::string& deviceMatch, std::string& err);
     void stop();
     const std::string& deviceName() const { return deviceName_; }
@@ -138,6 +141,7 @@ private:
     dsp::ChannelStrip* strip_ = nullptr;
     dsp::MicParams* mic_ = nullptr;
     dsp::MicChain* micChain_ = nullptr;
+    FloatRing* monitor_ = nullptr;
     std::string deviceMatch_;
     std::string deviceName_;
     std::string startErr_;

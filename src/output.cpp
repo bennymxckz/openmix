@@ -299,10 +299,12 @@ void MonitorOutput::run() {
         mix.assign(samples, 0.0f);
 
         for (auto& bus : *buses_) {
-            if (bus.isCapture) continue;   // its ring belongs to the USB IN path
-            bus.ring.trimTo(maxBacklog);
+            // A capture bus keeps its ring for the USB capture endpoint; its
+            // monitor copy lives in the second ring.
+            FloatRing& src = bus.isCapture ? bus.stream : bus.ring;
+            src.trimTo(maxBacklog);
             const float g = bus.muted ? 0.0f : bus.gain;
-            bus.ring.mixInto(mix.data(), samples, g);
+            src.mixInto(mix.data(), samples, g);
         }
 
         // Soft clip so a hot sum cannot produce digital overs in the monitor.

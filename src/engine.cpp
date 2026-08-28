@@ -63,7 +63,7 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
     }
     for (auto& b : buses_) {
         b.ring.reset(kSampleRate / 2, kChannels);
-        if (!b.isCapture) b.stream.reset(kSampleRate / 4, kChannels);
+        b.stream.reset(kSampleRate / 4, kChannels);   // stream send, or mic monitor
         b.strip.prepare(kSampleRate);
         b.micChain.prepare(kSampleRate);
     }
@@ -109,6 +109,10 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
             std::string micErr;
             mic_.setEq(&b.eq, &b.strip);
             mic_.setDynamics(&b.mic, &b.micChain);
+            mic_.setMonitor(&b.stream);
+            // Self-monitoring starts silent: hearing your own voice unasked is
+            // startling, and on speakers it feeds back.
+            b.gain = 0.0f;
             if (mic_.start(&b.ring, cfg_.micMatch, micErr)) {
                 micDeviceName_ = mic_.deviceName();
             } else {
@@ -190,6 +194,7 @@ bool Engine::setMicDevice(const std::string& match, std::string& err) {
             ring = &b.ring;
             mic_.setEq(&b.eq, &b.strip);
             mic_.setDynamics(&b.mic, &b.micChain);
+            mic_.setMonitor(&b.stream);
             break;
         }
     }

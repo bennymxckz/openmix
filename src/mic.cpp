@@ -103,6 +103,10 @@ void MicCapture::setDynamics(dsp::MicParams* mic, dsp::MicChain* chain) {
     micChain_ = chain;
 }
 
+void MicCapture::setMonitor(FloatRing* monitor) {
+    monitor_ = monitor;
+}
+
 bool MicCapture::start(FloatRing* sink, const std::string& deviceMatch, std::string& err) {
     sink_ = sink;
     deviceMatch_ = deviceMatch;
@@ -284,6 +288,7 @@ void MicCapture::run() {
                 if (st & AUDCLNT_BUFFERFLAGS_SILENT) {
                     if (silence.size() < samples) silence.assign(samples, 0.0f);
                     sink_->write(silence.data(), samples);
+                    if (monitor_) monitor_->write(silence.data(), samples);
                 } else {
                     const float* src = reinterpret_cast<const float*>(data);
                     const bool wantEq = eq_ && strip_ && eq_->enabled;
@@ -298,8 +303,10 @@ void MicCapture::run() {
                         if (wantEq) strip_->process(*eq_, work.data(), frames, kChannels);
                         if (wantDyn) micChain_->process(*mic_, work.data(), frames, kChannels);
                         sink_->write(work.data(), samples);
+                        if (monitor_) monitor_->write(work.data(), samples);
                     } else {
                         sink_->write(src, samples);
+                        if (monitor_) monitor_->write(src, samples);
                     }
                 }
             }

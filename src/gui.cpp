@@ -516,7 +516,7 @@ void drawUi() {
             ImGui::TableSetColumnIndex(3);
             if (b.isCapture) {
                 ImGui::AlignTextToFramePadding();
-                ImGui::TextDisabled("to apps");
+                ImGui::TextDisabled("apps hear this");
             } else {
                 float sdb = dbFromGain(b.streamGain);
                 ImGui::SetNextItemWidth(165.0f);
