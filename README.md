@@ -3,138 +3,167 @@
 An open-source per-application audio mixer for Windows, in the spirit of
 SteelSeries Sonar but without the bundled clipping software.
 
-openmix publishes its own playback devices -- **openmix Game**, **openmix
-Chat**, **openmix Media** -- plus a virtual microphone, **openmix Mic**, that
-any app can select in Windows sound settings. It mixes them with independent gain and sends the monitor mix to
-your real headphones.
+openmix publishes its own audio devices — **Openmix - Game**, **Openmix -
+Chat**, **Openmix - Media** and **Openmix - Mic** — that any application can
+select in Windows sound settings. Point Discord at Chat and Spotify at Media,
+give each its own fader, record them on separate tracks in OBS, and hear a
+monitor mix of the lot in your headphones.
 
-## How it works, and why that matters
+## Why this was hard, and how it works
 
-Windows has no user-mode API for creating an audio endpoint: endpoints are
-minted by `AudioEndpointBuilder` only from kernel-mode drivers. That single
-fact is what killed every previous open-source attempt at this, because
-shipping a kernel driver means Microsoft attestation signing, an EV
-certificate and a registered legal entity.
+Windows has no user-mode API for creating an audio endpoint. Endpoints are
+minted by `AudioEndpointBuilder`, and only from `KSCATEGORY_AUDIO` interfaces
+registered by kernel-mode drivers. That single fact killed every previous
+open-source attempt: shipping a kernel driver means Microsoft attestation
+signing, an EV certificate and a registered legal entity.
 
-openmix sidesteps it entirely. It acts as a **USB/IP server exporting virtual
-USB Audio Class 1.0 devices**. The already-Microsoft-signed `usbip-win2` VHCI
-driver attaches them, and Windows' in-box `usbaudio.sys` publishes the
-endpoints -- named from each device's USB product string. Audio arrives as
-isochronous USB packets straight into the engine.
+openmix goes around it. It runs a **USB/IP server exporting virtual USB Audio
+Class 1.0 devices**. The already-Microsoft-signed `usbip-win2` transport
+attaches them, Windows' in-box `usbaudio.sys` binds them, and the endpoints
+appear like any USB interface. Audio arrives as isochronous USB packets
+straight into the engine.
 
 No kernel code of our own, nothing to sign, Secure Boot stays on, and
 anti-cheat is untouched.
 
+Each playback channel is a **duplex** device: applications render into the
+playback side, and OBS records the processed result from the capture side. The
+two are independently levelled, so you can drop game audio in your own ears
+without changing what the stream hears.
+
 ## Requirements
 
-- Windows 10 2004+ / Windows 11
-- [usbip-win2](https://github.com/vadimgrn/usbip-win2) **v0.9.7.7**
-  (v0.9.7.8 has a known BSOD bug -- avoid it)
+- Windows 10 2004+ or Windows 11
+- [usbip-win2 **v.0.9.7.7**](https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.7.7)
+
+Not v.0.9.7.8 — its own release notes warn of memory corruption and BSODs.
+
+## Install
+
+Grab a zip from [Releases](https://github.com/bennymxckz/openmix/releases),
+unzip, run `openmix.exe`. It is portable; there is nothing to install beyond
+the transport driver above.
 
 ## Build
 
 Needs Visual Studio Build Tools with the C++ workload. Dear ImGui is fetched
 by CMake, so the first configure needs a network connection.
 
-    .	oolsuild.ps1            build
-    .	oolsuild.ps1 -Run       build and start the mixer
-    .	oolsuild.ps1 -Clean     reconfigure from scratch
+```
+.\tools\build.ps1              build
+.\tools\build.ps1 -Run         build and start the mixer
+.\tools\build.ps1 -Clean       reconfigure from scratch
+```
 
-CMake and Ninja ship inside Build Tools and are not on PATH; the script finds
-them with vswhere, so no developer prompt is needed. From a developer prompt
-the plain CMake commands work too:
+CMake and Ninja ship inside Build Tools and are not on `PATH`; the script
+finds them with `vswhere`, so no developer prompt is needed. From a developer
+prompt the plain commands work too:
 
-    cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
-    cmake --build build
+```
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build
+```
 
-Produces two binaries: `openmix.exe`, the mixer window, and `openmix-cli.exe`,
-a console build kept for debugging and headless use.
+Two binaries come out: `openmix.exe`, the mixer window, and `openmix-cli.exe`,
+a console build used for tests and one-off maintenance.
 
-## Run
+## Setting it up
 
-    build\openmix.exe
+1. Run `openmix.exe`. Four channels are published and appear in Windows sound
+   settings.
+2. Pick your **headphones** and **microphone** in the window. Changing either
+   restarts only that stream, so applications never notice.
+3. In Windows Settings → System → Sound → Volume mixer, set each
+   application's output device: Discord → Openmix - Chat, Spotify →
+   Openmix - Media. Windows remembers this.
+4. Leave your headphones as the system default, so the monitor mix lands
+   there and anything unassigned still reaches your ears.
+5. In OBS, add each channel as an **Audio Input Capture** source on its own
+   track. Leave Media off the stream if you do not want Spotify recorded.
 
-A mixer window with a level meter, volume fader and mute per channel, plus
-pickers for your headphones and microphone. Changing either restarts only
-that stream, so applications pointed at the openmix devices never notice. The
-devices are plugged in at startup and unplug when openmix exits.
-
-Channels are not fixed. The Channels section of the window adds and removes
-them, so you can have a Browser or Alerts channel alongside the defaults --
-each one becomes its own pair of Windows devices. Changing the set restarts
-the engine, which takes about a second.
+Closing or minimising the window parks openmix in the tray with audio still
+running. Left-click the tray icon to show or hide it, right-click for Quit.
+While hidden it stops rendering entirely, so an idle mixer costs nothing.
 
 ### Device names
 
 Windows composes USB audio endpoint names as `<terminal type> (<product>)`
-and a device cannot override that, so the channels appear as
-`Speakers (Openmix - Game)`. Setting the endpoint's own friendly name is the
-only thing that sticks, and it needs administrator rights -- once, because the
-name persists:
+and a device cannot override that, so channels first appear as
+`Speakers (Openmix - Game)`. Setting the endpoint's own name is the only
+thing that sticks, and that is an administrator write — once, because the
+name persists. Use the **Fix names** button in the window, or:
 
-    build\openmix-cli.exe --fix-names      (elevated, while openmix is running)
+```
+build\openmix-cli.exe --fix-names
+```
 
-Closing the window or minimising it parks openmix in the tray with audio
-still running. Left-click the tray icon to show or hide the mixer;
-right-click for Quit. While hidden it stops rendering entirely.
+If old entries have accumulated from earlier versions, clear them with
+`tools\cleanup-devices.ps1` (elevated, with openmix not running).
 
-### Console build
+## Features
 
-    build\openmix-cli.exe --out "HyperX Cloud Alpha S Game"
-    build\openmix-cli.exe --list-devices        show output devices
-    build\openmix-cli.exe --mic "Yeti"          pick the microphone source
-    build\openmix-cli.exe --no-mic              skip the virtual microphone
-    build\openmix-cli.exe --bus Game --bus Chat --bus Media --bus Browser
-    build\openmix-cli.exe --loopback            tap apps instead (no devices)
+- Four channels by default, and the set is editable — Sonar's are fixed.
+  Each channel becomes its own pair of Windows devices.
+- Independent **headphone** and **stream** levels per channel, plus mute.
+- Per-channel EQ: high-pass and three parametric bands.
+- Microphone noise gate and compressor, applied on the way in so the virtual
+  microphone and your own monitoring agree.
+- Microphone self-monitoring, off by default.
+- Settings persist to `%APPDATA%\openmix\config.ini` as plain text, written
+  when they change rather than only at exit.
+- Optional start with Windows, straight to the tray.
 
-Keys: `1`-`9` select bus, `+`/`-` gain, `m` mute, `q` quit.
+## Testing
 
-## Setting it up
+Audio software is easy to get subtly wrong and hard to judge by ear, so
+correctness is measured rather than listened for.
 
-1. Run openmix with `--out` pointing at your headphones.
-2. In Windows Settings -> System -> Sound -> Volume mixer, set each app's
-   output device: Discord -> openmix Chat, Spotify -> openmix Media.
-3. Leave your headphones as the system default so the monitor mix lands
-   there, and so anything unassigned still reaches your ears.
-4. In OBS, add each channel as an **Audio Input Capture** source on its own
-   track -- they appear as `Openmix - Game`, `Openmix - Chat` and so on in the
-   recording device list. Leave Media off the stream if you do not want
-   Spotify recorded.
+```
+build\openmix-cli.exe --dsptest     filter and dynamics response, offline
+build\openmix-cli.exe --selftest    round trip through a live channel
+```
 
-Each playback channel is a duplex device: applications render into the
-playback side, and OBS records the same audio back from the capture side. The
-two faders are independent, so you can drop game audio in your own ears
-without touching what the stream hears, exactly as Sonar does.
+`--dsptest` is pure arithmetic — no devices, no audio hardware — so it runs in
+CI on every push. It checks the real frequency response of every filter and
+the gain reduction of the gate and compressor against theory.
 
-## Status
+`--selftest` plays a tone into a channel's playback side and records it from
+the same channel's capture side, then reports frame rate against real time,
+signal level and dropout count. openmix is both ends of its own signal path,
+which makes a full round-trip test possible without any hardware. It needs a
+live openmix, so it stays a local check.
 
-Working: device creation and enumeration, USB/IP protocol (devlist, import,
-control transfers, isochronous OUT), UAC1 descriptors with a feature unit for
-host volume/mute, per-bus gain and mute, peak meters, monitor mixing, output
-device selection, auto attach/detach, and a driverless loopback mode.
+## Design notes
 
-Settings live in `%APPDATA%\openmix\config.ini` as plain text -- device
-choices, per-channel volume and mute -- written whenever you change something
-rather than only at exit. "Start with Windows" registers a per-user HKCU Run
-entry that launches openmix straight to the tray.
+**Clocks.** Nothing paces off a wall clock. Playback accepts more audio only
+once the monitor has drained what it already holds, which makes the output
+device the master; capture waits for its producer to supply a packet. Neither
+side can drift against the other because neither has an independent clock, so
+no resampler is needed to hide a difference that does not exist.
 
-Each channel has a high-pass and three parametric EQ bands. The microphone
-channel adds a noise gate and a compressor, applied on the way in so the
-virtual microphone and any monitoring agree.
+**Threading.** Each endpoint of a duplex device gets its own worker. USB/IP
+identifies every URB by sequence number and allows out-of-order responses,
+which is what lets the socket reader dispatch without ever blocking on
+pacing — one direction stalling the other was an audible bug once already.
 
-Two test modes verify this without hardware or listening:
+**Identity.** A channel's USB product ID and serial derive from a stable key,
+not its display name, so renaming a channel does not make Windows register
+brand-new hardware and orphan your per-application assignments.
 
-    build\openmix-cli.exe --dsptest      filter and dynamics response, offline
-    build\openmix-cli.exe --selftest     round trip through a live channel
+## Not yet
 
-Not yet: an installer.
+An installer, and a plugin host so third-party VST3 or CLAP effects can sit in
+a channel.
 
-The microphone currently passes your input device through unprocessed and is
-not folded into the monitor mix, so you will not hear yourself.
+Automatic per-application routing was attempted and removed: the
+`AudioPolicyConfig` factory that Windows' own Volume mixer uses is
+undocumented, and calling it from a hand-declared vtable access-violates on
+current builds. Windows remembers per-app assignments anyway, so it is a
+one-time job.
 
 ## License
 
-MIT -- see [LICENSE](LICENSE). Fork it, ship it, make it yours.
+MIT — see [LICENSE](LICENSE). Fork it, ship it, make it yours.
 
 Note for contributors: loading GPL or LGPL DSP plugins through a published
 plugin ABI at the user's direction is fine. Vendoring their source into this
