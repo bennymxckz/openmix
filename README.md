@@ -33,8 +33,16 @@ anti-cheat is untouched.
 
 ## Build
 
-MSVC + Windows SDK, from a developer prompt. Dear ImGui is fetched by CMake,
-so the first configure needs a network connection.
+Needs Visual Studio Build Tools with the C++ workload. Dear ImGui is fetched
+by CMake, so the first configure needs a network connection.
+
+    .	oolsuild.ps1            build
+    .	oolsuild.ps1 -Run       build and start the mixer
+    .	oolsuild.ps1 -Clean     reconfigure from scratch
+
+CMake and Ninja ship inside Build Tools and are not on PATH; the script finds
+them with vswhere, so no developer prompt is needed. From a developer prompt
+the plain CMake commands work too:
 
     cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
     cmake --build build
