@@ -559,6 +559,23 @@ void drawUi() {
         ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.3f, 1.0f), "%s", g_engine.micError().c_str());
     }
 
+    if (g_engine.usbipMissing()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.5f, 0.42f, 1.0f));
+        ImGui::TextWrapped(
+            "usbip-win2 is not installed, so no devices can be created. "
+            "openmix publishes its channels as virtual USB audio devices and "
+            "needs that driver to attach them.");
+        ImGui::PopStyleColor();
+        ImGui::TextDisabled("Install release v.0.9.7.7 from "
+                            "github.com/vadimgrn/usbip-win2, then restart openmix.");
+        ImGui::Spacing();
+    } else if (g_engine.devicesMissing()) {
+        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.3f, 1.0f),
+                           "Some channels did not attach. Check that usbip-win2 is working, "
+                           "or use 'usbip port' to see what is connected.");
+        ImGui::Spacing();
+    }
+
     if (!g_engine.namesApplied()) {
         ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.3f, 1.0f),
                            "Windows refused the device rename - run openmix as "

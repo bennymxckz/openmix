@@ -134,9 +134,23 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
     return true;
 }
 
+bool Engine::devicesMissing() const {
+    if (!running_) return false;
+    for (const auto& ep : endpoints_) {
+        if (!ep->attached.load()) return true;
+    }
+    return false;
+}
+
 void Engine::attachAll() {
     const std::string exe = usbipPath();
-    if (exe.empty()) return;
+    if (exe.empty()) {
+        // Without the transport there is nothing to attach to, and the
+        // channels would silently never appear.
+        usbipMissing_ = true;
+        return;
+    }
+    usbipMissing_ = false;
     for (const auto& ep : endpoints_) {
         runQuiet("\"" + exe + "\" attach -r 127.0.0.1 -b " + ep->busid);
     }

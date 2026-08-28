@@ -37,6 +37,11 @@ public:
     const std::string& micError() const { return micError_; }
     // False when Windows refused the endpoint rename, which needs admin.
     bool namesApplied() const { return renamedOk_; }
+    // True when the usbip transport is missing, which is the one prerequisite
+    // openmix cannot supply for itself.
+    bool usbipMissing() const { return usbipMissing_; }
+    // True when devices were attached but Windows never enumerated them.
+    bool devicesMissing() const;
     double monitorBufferMs() const { return out_.bufferMs(); }
     const EngineConfig& config() const { return cfg_; }
 
@@ -66,6 +71,7 @@ private:
     MicCapture mic_;
     std::string micDeviceName_;
     bool renamedOk_ = true;
+    bool usbipMissing_ = false;
     std::string micError_;
     bool running_ = false;
 
