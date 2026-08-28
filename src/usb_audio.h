@@ -63,12 +63,14 @@ struct SetupPacket {
 // manipulates over the control endpoint.
 class Device {
 public:
-    Device(std::string productName, uint16_t productId,
+    // `key` is the identity (e.g. "Game") and `productName` is what the user
+    // sees. They are separate on purpose: identity must survive a rename, or
+    // every cosmetic change makes Windows register brand-new hardware and
+    // leaves the old entries behind forever.
+    Device(std::string productName, std::string key,
            Direction dir = Direction::Playback);
 
-    // Identity derived from the name alone, so a device keeps the same USB
-    // VID/PID and serial no matter how the bus list changes around it.
-    static uint16_t stableProductId(const std::string& name);
+    static uint16_t stableProductId(const std::string& key);
 
     Direction direction() const { return dir_; }
     bool isCapture() const { return dir_ == Direction::Capture; }
@@ -98,6 +100,7 @@ private:
     std::vector<uint8_t> stringDescriptor(uint8_t index) const;
 
     std::string productName_;
+    std::string key_;
     uint16_t productId_;
     Direction dir_ = Direction::Playback;
     std::vector<uint8_t> devDesc_;

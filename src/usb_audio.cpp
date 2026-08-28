@@ -37,6 +37,12 @@ constexpr uint8_t SUBCLASS_STREAM  = 0x02;
 constexpr uint8_t FU_MUTE   = 0x01;
 constexpr uint8_t FU_VOLUME = 0x02;
 
+// String descriptor indices.
+constexpr uint8_t STR_MANUFACTURER = 1;
+constexpr uint8_t STR_PRODUCT      = 2;
+constexpr uint8_t STR_SERIAL       = 3;
+constexpr uint8_t STR_TERMINAL     = 4;
+
 constexpr uint8_t ID_INPUT_TERMINAL  = 1;
 constexpr uint8_t ID_FEATURE_UNIT    = 2;
 constexpr uint8_t ID_OUTPUT_TERMINAL = 3;
@@ -48,8 +54,9 @@ constexpr int16_t kVolRes = 256;
 
 }  // namespace
 
-Device::Device(std::string productName, uint16_t productId, Direction dir)
-    : productName_(std::move(productName)), productId_(productId), dir_(dir) {
+Device::Device(std::string productName, std::string key, Direction dir)
+    : productName_(std::move(productName)), key_(std::move(key)),
+      productId_(stableProductId(key_)), dir_(dir) {
 
     const bool capture = (dir_ == Direction::Capture);
 
@@ -89,7 +96,8 @@ Device::Device(std::string productName, uint16_t productId, Direction dir)
     u8(ac, kChannels);
     le16(ac, 0x0003);         // front left + front right
     u8(ac, 0);                // iChannelNames
-    u8(ac, 0);                // iTerminal
+    u8(ac, 0);                // iTerminal: ignored for render, doubles the
+                              // name for capture -- the endpoint is renamed instead    // see the output terminal above
 
     // Feature unit: master mute + volume
     u8(ac, 10); u8(ac, DT_CS_INTERFACE); u8(ac, 0x06);
@@ -107,7 +115,9 @@ Device::Device(std::string productName, uint16_t productId, Direction dir)
     le16(ac, capture ? 0x0101 : 0x0301);   // USB Streaming : Speaker
     u8(ac, 0);                // bAssocTerminal
     u8(ac, ID_FEATURE_UNIT);
-    u8(ac, 0);                // iTerminal
+    // iTerminal: naming the terminal that faces the user is what stops Windows
+    // labelling every endpoint from its terminal type ("Speakers").
+    u8(ac, 0);                // iTerminal, see the input terminal above
 
     const uint16_t acTotal = static_cast<uint16_t>(ac.size());
     ac[5] = static_cast<uint8_t>(acTotal & 0xFF);
@@ -187,9 +197,9 @@ float Device::linearGain() const {
 // bus index means adding or removing a bus renumbers the others, and Windows
 // then registers brand-new devices ("2- openmix Chat") instead of recognising
 // the existing ones -- losing per-app output assignments every time.
-uint16_t Device::stableProductId(const std::string& name) {
+uint16_t Device::stableProductId(const std::string& key) {
     uint32_t h = 2166136261u;                 // FNV-1a
-    for (unsigned char c : name) {
+    for (unsigned char c : key) {
         h ^= c;
         h *= 16777619u;
     }
@@ -205,15 +215,13 @@ std::vector<uint8_t> Device::stringDescriptor(uint8_t index) const {
     }
     std::string s;
     switch (index) {
-        case 1: s = "openmix"; break;
-        case 2: s = productName_; break;
-        case 3: {
-            // Serial is the stable half of the device's identity, so it must
-            // also come from the name rather than any positional value.
-            s = productName_;
-            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
-                return c == ' ' ? '-' : static_cast<char>(::tolower(c));
-            });
+        case STR_MANUFACTURER: s = "openmix"; break;
+        case STR_PRODUCT:      s = productName_; break;
+        case STR_SERIAL: {
+            // Serial is identity, so it comes from the key -- never from the
+            // display name, which the user may want changed.
+            s = "openmix-";
+            for (unsigned char c : key_) s += static_cast<char>(::tolower(c));
             break;
         }
         default: return d;

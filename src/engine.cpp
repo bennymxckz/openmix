@@ -68,9 +68,9 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
     for (size_t i = 0; i < buses_.size(); ++i) {
         auto ep = std::make_unique<VirtualEndpoint>();
         const bool cap = buses_[i].isCapture;
-        const std::string devName = "openmix " + buses_[i].name;
         ep->device = std::make_unique<usbaudio::Device>(
-            devName, usbaudio::Device::stableProductId(devName),
+            "Openmix - " + buses_[i].name,   // shown to the user
+            buses_[i].name,                  // identity, stable across renames
             cap ? usbaudio::Direction::Capture : usbaudio::Direction::Playback);
         if (cap) {
             ep->source = &buses_[i].ring;
@@ -85,7 +85,10 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
         out_.stop();
         return false;
     }
-    if (cfg_.autoAttach) attachAll();
+    if (cfg_.autoAttach) {
+        attachAll();
+        renameEndpoints();
+    }
 
     if (cfg_.enableMic) {
         for (auto& b : buses_) {
@@ -118,6 +121,72 @@ void Engine::attachAll() {
     for (const auto& ep : endpoints_) {
         runQuiet("\"" + exe + "\" attach -r 127.0.0.1 -b " + ep->busid);
     }
+}
+
+void Engine::renameEndpoints() {
+    // Windows needs a moment to enumerate the freshly attached devices and
+    // build their endpoints before the property store exists.
+    ::Sleep(1200);
+
+    auto widen = [](const std::string& in) {
+        if (in.empty()) return std::wstring{};
+        const int n = ::MultiByteToWideChar(CP_UTF8, 0, in.c_str(), (int)in.size(), nullptr, 0);
+        std::wstring w(static_cast<size_t>(n), wchar_t{});
+        ::MultiByteToWideChar(CP_UTF8, 0, in.c_str(), (int)in.size(), w.data(), n);
+        return w;
+    };
+
+    std::vector<RenderDevice> all = listRenderDevices();
+    const std::vector<RenderDevice> caps = listCaptureDevices();
+    all.insert(all.end(), caps.begin(), caps.end());
+
+    renamedOk_ = true;
+    for (const auto& ep : endpoints_) {
+        const std::string want = ep->device->productName();   // "Openmix - Game"
+        for (const auto& d : all) {
+            // Windows wraps our product string, e.g. "Speakers (Openmix - Game)".
+            if (d.name == want) break;                        // already correct
+            if (d.name.find(want) == std::string::npos) continue;
+            if (!renameEndpoint(d.id, widen(want))) renamedOk_ = false;
+            break;
+        }
+    }
+}
+
+bool Engine::setOutputDevice(const std::string& match, std::string& err) {
+    if (!running_) return false;
+    out_.stop();
+    cfg_.outMatch = match;
+    if (!out_.start(&buses_, cfg_.outMatch, err)) {
+        // Fall back to whatever Windows will give us rather than going silent.
+        cfg_.outMatch.clear();
+        std::string ignored;
+        out_.start(&buses_, cfg_.outMatch, ignored);
+        return false;
+    }
+    return true;
+}
+
+bool Engine::setMicDevice(const std::string& match, std::string& err) {
+    if (!running_) return false;
+    FloatRing* ring = nullptr;
+    for (auto& b : buses_) {
+        if (b.isCapture) { ring = &b.ring; break; }
+    }
+    if (!ring) {
+        err = "no microphone bus";
+        return false;
+    }
+    mic_.stop();
+    cfg_.micMatch = match;
+    micDeviceName_.clear();
+    micError_.clear();
+    if (!mic_.start(ring, cfg_.micMatch, err)) {
+        micError_ = err;
+        return false;
+    }
+    micDeviceName_ = mic_.deviceName();
+    return true;
 }
 
 void Engine::stop() {

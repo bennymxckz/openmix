@@ -79,6 +79,13 @@ struct RenderDevice {
 std::vector<RenderDevice> listRenderDevices();
 std::vector<RenderDevice> listCaptureDevices();
 
+// Windows composes USB audio endpoint names as "<terminal type> (<product>)"
+// and a device cannot override that, so every openmix channel shows up called
+// "Speakers". Setting the endpoint's own friendly name is what the Rename
+// button in Sound Control Panel does, and it is the only thing that sticks.
+// Returns false when the property store refuses the write.
+bool renameEndpoint(const std::wstring& deviceId, const std::wstring& newName);
+
 // Pulls audio from a real input device into a ring, which the USB capture
 // endpoint then serves to whichever application selected "openmix Mic".
 class MicCapture {

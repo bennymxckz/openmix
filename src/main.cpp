@@ -66,6 +66,8 @@ void usage() {
         "  --mic NAME      source the virtual microphone from this input\n"
         "  --no-mic        do not create the openmix Mic device\n"
         "  --list-devices  show available output devices and exit\n"
+        "  --fix-names     rename the endpoints to \"Openmix - X\" (needs admin,\n"
+        "                  run once while openmix is running)\n"
         "  --port N        USB/IP listen port (default 3240)\n"
         "  -v              log attach/detach and control traffic\n"
         "\n"
@@ -106,6 +108,53 @@ std::string findUsbip() {
     return {};
 }
 
+// Windows names USB audio endpoints "<terminal type> (<product>)" and a device
+// cannot override it, so our channels all show up called "Speakers". Setting
+// the endpoint's own friendly name is the only thing that sticks, and it needs
+// administrator rights -- but only once, because the name persists.
+int fixNames() {
+    auto widen = [](const std::string& in) {
+        if (in.empty()) return std::wstring{};
+        const int n = ::MultiByteToWideChar(CP_UTF8, 0, in.c_str(), (int)in.size(), nullptr, 0);
+        std::wstring w(static_cast<size_t>(n), wchar_t{});
+        ::MultiByteToWideChar(CP_UTF8, 0, in.c_str(), (int)in.size(), w.data(), n);
+        return w;
+    };
+
+    std::vector<RenderDevice> all = listRenderDevices();
+    const std::vector<RenderDevice> caps = listCaptureDevices();
+    all.insert(all.end(), caps.begin(), caps.end());
+
+    int fixed = 0, failed = 0, already = 0;
+    for (const auto& d : all) {
+        const size_t at = d.name.find("Openmix - ");
+        if (at == std::string::npos) continue;
+
+        std::string want = d.name.substr(at);
+        while (!want.empty() && (want.back() == ')' || want.back() == ' ')) want.pop_back();
+        // "Openmix - Mic (Openmix - Mic)" collapses to the first occurrence.
+        const size_t dup = want.find(" (");
+        if (dup != std::string::npos) want = want.substr(0, dup);
+
+        if (d.name == want) { ++already; continue; }
+
+        if (renameEndpoint(d.id, widen(want))) {
+            std::printf("  %-34s -> %s\n", d.name.c_str(), want.c_str());
+            ++fixed;
+        } else {
+            std::printf("  %-34s FAILED (run as administrator)\n", d.name.c_str());
+            ++failed;
+        }
+    }
+
+    if (!fixed && !failed && !already) {
+        std::printf("No openmix endpoints found. Start openmix first, then run this.\n");
+        return 1;
+    }
+    std::printf("\n%d renamed, %d already correct, %d failed\n", fixed, already, failed);
+    return failed ? 1 : 0;
+}
+
 bool busClaimsPid(const Bus& bus, DWORD pid, const std::vector<ProcEntry>& procs) {
     DWORD cur = pid;
     for (int depth = 0; depth < 12 && cur != 0; ++depth) {
@@ -127,6 +176,7 @@ int main(int argc, char** argv) {
     bool verbose = false;
     bool loopbackMode = false;
     bool listDevices = false;
+    bool fixNames_ = false;
     bool noMic = false;
     std::string outMatch;
     std::string micMatch;
@@ -139,6 +189,7 @@ int main(int argc, char** argv) {
         if (a == "--loopback")  { loopbackMode = true; continue; }
         if (a == "--endpoints") { loopbackMode = false; continue; }
         if (a == "--list-devices") { listDevices = true; continue; }
+        if (a == "--fix-names") { fixNames_ = true; continue; }
         if (a == "--out" && i + 1 < argc) { outMatch = argv[++i]; continue; }
         if (a == "--mic" && i + 1 < argc) { micMatch = argv[++i]; continue; }
         if (a == "--no-mic") { noMic = true; continue; }
@@ -195,6 +246,12 @@ int main(int argc, char** argv) {
     ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     ::timeBeginPeriod(1);   // the USB pacer sleeps in ~1 ms steps
 
+    if (fixNames_) {
+        const int rc = fixNames();
+        ::CoUninitialize();
+        return rc;
+    }
+
     if (listDevices) {
         std::printf("Output devices:\n");
         for (const auto& d : listRenderDevices()) {
@@ -221,9 +278,8 @@ int main(int argc, char** argv) {
         for (size_t i = 0; i < buses.size(); ++i) {
             auto ep = std::make_unique<VirtualEndpoint>();
             const bool cap = buses[i].isCapture;
-            const std::string devName = "openmix " + buses[i].name;
             ep->device = std::make_unique<usbaudio::Device>(
-                devName, usbaudio::Device::stableProductId(devName),
+                "Openmix - " + buses[i].name, buses[i].name,
                 cap ? usbaudio::Direction::Capture : usbaudio::Direction::Playback);
             if (cap) ep->source = &buses[i].ring; else ep->sink = &buses[i].ring;
             ep->busid = "1-" + std::to_string(i + 1);

@@ -35,8 +35,16 @@ public:
     const std::string& monitorDevice() const { return out_.deviceName(); }
     const std::string& micDevice() const { return micDeviceName_; }
     const std::string& micError() const { return micError_; }
+    // False when Windows refused the endpoint rename, which needs admin.
+    bool namesApplied() const { return renamedOk_; }
     double monitorBufferMs() const { return out_.bufferMs(); }
     const EngineConfig& config() const { return cfg_; }
+
+    // Swap the monitor output or microphone source while running. Only that
+    // one stream restarts -- the USB devices stay attached, so applications
+    // pointed at them never notice.
+    bool setOutputDevice(const std::string& match, std::string& err);
+    bool setMicDevice(const std::string& match, std::string& err);
 
     // Per-bus packet rate in frames/sec, sampled against the performance
     // counter. Call about once a second from the UI thread.
@@ -48,6 +56,7 @@ public:
 
 private:
     void attachAll();
+    void renameEndpoints();
 
     EngineConfig cfg_;
     std::vector<Bus> buses_;
@@ -56,6 +65,7 @@ private:
     MonitorOutput out_;
     MicCapture mic_;
     std::string micDeviceName_;
+    bool renamedOk_ = true;
     std::string micError_;
     bool running_ = false;
 

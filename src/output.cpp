@@ -83,6 +83,30 @@ std::vector<RenderDevice> listRenderDevices() {
     return out;
 }
 
+bool renameEndpoint(const std::wstring& deviceId, const std::wstring& newName) {
+    ComPtr<IMMDeviceEnumerator> devEnum;
+    if (FAILED(::CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                  IID_PPV_ARGS(&devEnum)))) {
+        return false;
+    }
+    ComPtr<IMMDevice> dev;
+    if (FAILED(devEnum->GetDevice(deviceId.c_str(), &dev))) return false;
+
+    ComPtr<IPropertyStore> props;
+    if (FAILED(dev->OpenPropertyStore(STGM_READWRITE, &props))) return false;
+
+    PROPVARIANT pv;
+    ::PropVariantInit(&pv);
+    pv.vt = VT_LPWSTR;
+    pv.pwszVal = const_cast<wchar_t*>(newName.c_str());
+    const HRESULT hr = props->SetValue(PKEY_Device_FriendlyName, pv);
+    // The string is borrowed, so zero the variant rather than clearing it.
+    pv.vt = VT_EMPTY;
+    pv.pwszVal = nullptr;
+    if (FAILED(hr)) return false;
+    return SUCCEEDED(props->Commit());
+}
+
 DWORD WINAPI MonitorOutput::thunk(LPVOID self) {
     static_cast<MonitorOutput*>(self)->run();
     return 0;

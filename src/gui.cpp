@@ -42,6 +42,7 @@ Engine g_engine;
 std::string g_startError;
 std::vector<RenderDevice> g_outDevices;
 std::vector<RenderDevice> g_micDevices;
+std::string g_deviceError;
 
 void createRenderTarget() {
     ID3D11Texture2D* back = nullptr;
@@ -237,19 +238,64 @@ void drawUi() {
         return;
     }
 
-    ImGui::TextDisabled("Monitor");
+    // Device pickers. openmix's own endpoints are filtered out of both lists:
+    // monitoring into our own output would feed the engine back into itself,
+    // and capturing our own microphone would loop it.
+    ImGui::PushItemWidth(340.0f);
+
+    ImGui::TextDisabled("Headphones");
+    ImGui::SameLine(110.0f);
+    if (ImGui::BeginCombo("##out", g_engine.monitorDevice().c_str())) {
+        for (const auto& d : g_outDevices) {
+            if (d.isOpenmix) continue;
+            const bool sel = (d.name == g_engine.monitorDevice());
+            if (ImGui::Selectable(d.name.c_str(), sel)) {
+                std::string err;
+                if (!g_engine.setOutputDevice(d.name, err)) g_deviceError = err;
+                else g_deviceError.clear();
+            }
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
     ImGui::SameLine();
-    ImGui::Text("%s", g_engine.monitorDevice().c_str());
-    ImGui::SameLine();
-    ImGui::TextDisabled("(%.0f ms buffer)", g_engine.monitorBufferMs());
+    ImGui::TextDisabled("%.0f ms", g_engine.monitorBufferMs());
 
     ImGui::TextDisabled("Microphone");
+    ImGui::SameLine(110.0f);
+    const std::string micLabel =
+        g_engine.micDevice().empty() ? std::string("(none)") : g_engine.micDevice();
+    if (ImGui::BeginCombo("##mic", micLabel.c_str())) {
+        for (const auto& d : g_micDevices) {
+            if (d.isOpenmix) continue;
+            const bool sel = (d.name == g_engine.micDevice());
+            if (ImGui::Selectable(d.name.c_str(), sel)) {
+                std::string err;
+                if (!g_engine.setMicDevice(d.name, err)) g_deviceError = err;
+                else g_deviceError.clear();
+            }
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
     ImGui::SameLine();
-    if (g_engine.micDevice().empty()) {
-        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.3f, 1.0f), "%s",
-                           g_engine.micError().empty() ? "none" : g_engine.micError().c_str());
-    } else {
-        ImGui::Text("%s", g_engine.micDevice().c_str());
+    if (ImGui::SmallButton("Rescan")) {
+        g_outDevices = listRenderDevices();
+        g_micDevices = listCaptureDevices();
+    }
+
+    ImGui::PopItemWidth();
+
+    if (!g_deviceError.empty()) {
+        ImGui::TextColored(ImVec4(0.9f, 0.45f, 0.4f, 1.0f), "%s", g_deviceError.c_str());
+    } else if (g_engine.micDevice().empty() && !g_engine.micError().empty()) {
+        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.3f, 1.0f), "%s", g_engine.micError().c_str());
+    }
+
+    if (!g_engine.namesApplied()) {
+        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.3f, 1.0f),
+                           "Windows refused the device rename - run openmix as "
+                           "administrator once to apply the names.");
     }
 
     ImGui::Separator();

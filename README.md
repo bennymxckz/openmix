@@ -46,8 +46,20 @@ a console build kept for debugging and headless use.
 
     build\openmix.exe
 
-A mixer window with a level meter, volume fader and mute per channel. The
+A mixer window with a level meter, volume fader and mute per channel, plus
+pickers for your headphones and microphone. Changing either restarts only
+that stream, so applications pointed at the openmix devices never notice. The
 devices are plugged in at startup and unplug when openmix exits.
+
+### Device names
+
+Windows composes USB audio endpoint names as `<terminal type> (<product>)`
+and a device cannot override that, so the channels appear as
+`Speakers (Openmix - Game)`. Setting the endpoint's own friendly name is the
+only thing that sticks, and it needs administrator rights -- once, because the
+name persists:
+
+    build\openmix-cli.exe --fix-names      (elevated, while openmix is running)
 
 Closing the window or minimising it parks openmix in the tray with audio
 still running. Left-click the tray icon to show or hide the mixer;
