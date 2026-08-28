@@ -103,6 +103,25 @@ public:
         for (int c = 0; c < 2; ++c) z1_[c] = z2_[c] = 0.0f;
     }
 
+    // Magnitude response at one frequency, from the coefficients actually in
+    // use. Evaluating the transfer function beats approximating the curve
+    // from the parameters: what gets drawn is then what is being heard.
+    double magnitudeAt(double freq, double sampleRate) const {
+        if (bypass_) return 1.0;
+        const double w = 2.0 * kPi * freq / sampleRate;
+        const double cw = std::cos(w), sw = std::sin(w);
+        const double c2 = std::cos(2.0 * w), s2 = std::sin(2.0 * w);
+
+        const double nr = b0_ + b1_ * cw + b2_ * c2;
+        const double ni = -(b1_ * sw + b2_ * s2);
+        const double dr = 1.0 + a1_ * cw + a2_ * c2;
+        const double di = -(a1_ * sw + a2_ * s2);
+
+        const double den = dr * dr + di * di;
+        if (den < 1e-20) return 1.0;
+        return std::sqrt((nr * nr + ni * ni) / den);
+    }
+
     inline float process(float x, int ch) {
         if (bypass_) return x;
         const float y = b0_ * x + z1_[ch];
@@ -151,6 +170,20 @@ public:
 
     void reset() {
         for (auto& b : bands_) b.reset();
+    }
+
+    // Combined response of the chain in dB, for drawing. Designs a scratch
+    // chain from the given parameters so the curve can be shown for a channel
+    // that is not currently processing audio.
+    static double responseDb(const EqParams& p, double freq, double sampleRate) {
+        if (!p.enabled) return 0.0;
+        Biquad b;
+        double mag = 1.0;
+        if (p.hp.on)   { b.design(Kind::HighPass,  sampleRate, p.hp.freq,   p.hp.q,   0.0); mag *= b.magnitudeAt(freq, sampleRate); }
+        if (p.low.on)  { b.design(Kind::LowShelf,  sampleRate, p.low.freq,  p.low.q,  p.low.gainDb); mag *= b.magnitudeAt(freq, sampleRate); }
+        if (p.mid.on)  { b.design(Kind::Peaking,   sampleRate, p.mid.freq,  p.mid.q,  p.mid.gainDb); mag *= b.magnitudeAt(freq, sampleRate); }
+        if (p.high.on) { b.design(Kind::HighShelf, sampleRate, p.high.freq, p.high.q, p.high.gainDb); mag *= b.magnitudeAt(freq, sampleRate); }
+        return mag > 1e-9 ? 20.0 * std::log10(mag) : -60.0;
     }
 
 private:

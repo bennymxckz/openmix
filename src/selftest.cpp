@@ -354,6 +354,44 @@ int runDspTest() {
         ok &= checkDb("high shelf leaves 200 Hz alone", gainAtDb(p, 200.0), 0.0, 0.5);
     }
 
+    // The EQ panel draws a response curve. If it does not agree with what the
+    // filters actually do, it is decoration pretending to be information.
+    {
+        struct Case { const char* what; dsp::EqParams p; double freq; };
+        std::vector<Case> cases;
+
+        dsp::EqParams peak;
+        peak.enabled = true;
+        peak.low.on = peak.high.on = false;
+        peak.mid.on = true;
+        peak.mid.freq = 1000.0f;
+        peak.mid.gainDb = 9.0f;
+        peak.mid.q = 1.5f;
+        cases.push_back({"curve matches measurement at a peak", peak, 1000.0});
+        cases.push_back({"curve matches measurement beside a peak", peak, 300.0});
+
+        dsp::EqParams hp;
+        hp.enabled = true;
+        hp.low.on = hp.mid.on = hp.high.on = false;
+        hp.hp.on = true;
+        hp.hp.freq = 500.0f;
+        cases.push_back({"curve matches measurement on a high-pass", hp, 200.0});
+
+        dsp::EqParams shelf;
+        shelf.enabled = true;
+        shelf.mid.on = shelf.high.on = false;
+        shelf.low.on = true;
+        shelf.low.freq = 300.0f;
+        shelf.low.gainDb = -9.0f;
+        cases.push_back({"curve matches measurement on a shelf", shelf, 60.0});
+
+        for (const auto& c : cases) {
+            const double drawn = dsp::ChannelStrip::responseDb(c.p, c.freq, kSampleRate);
+            const double heard = gainAtDb(c.p, c.freq);
+            ok &= checkDb(c.what, drawn, heard, 0.35);
+        }
+    }
+
     std::printf("\n%s\n", ok ? "PASS - all DSP checks" : "FAIL");
     return ok ? 0 : 1;
 }

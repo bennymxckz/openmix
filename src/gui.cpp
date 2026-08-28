@@ -484,6 +484,56 @@ bool drawBand(const char* label, dsp::Band& b, bool hasGain) {
     return changed;
 }
 
+// The chain's actual response, drawn from its coefficients. Log frequency,
+// because that is how the bands are spaced and how hearing works.
+void drawEqCurve(const dsp::EqParams& p, ImVec2 size) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 o = ImGui::GetCursorScreenPos();
+    dl->AddRectFilled(o, ImVec2(o.x + size.x, o.y + size.y), theme::kMeterBg, 5.0f);
+
+    constexpr double kMinHz = 20.0, kMaxHz = 20000.0;
+    constexpr float kRangeDb = 18.0f;
+    auto yFor = [&](double db) {
+        const float t = static_cast<float>(db) / kRangeDb;   // -1..1
+        return o.y + size.y * 0.5f - t * size.y * 0.5f;
+    };
+
+    // Octave grid, labelled where there is room.
+    const double marks[] = { 100.0, 1000.0, 10000.0 };
+    for (double f : marks) {
+        const float x = o.x + size.x * static_cast<float>(
+            (std::log10(f) - std::log10(kMinHz)) / (std::log10(kMaxHz) - std::log10(kMinHz)));
+        dl->AddLine(ImVec2(x, o.y), ImVec2(x, o.y + size.y), theme::fade(theme::kLine, 0.8f));
+    }
+    for (double db : { -12.0, -6.0, 6.0, 12.0 }) {
+        const float y = yFor(db);
+        dl->AddLine(ImVec2(o.x, y), ImVec2(o.x + size.x, y), theme::fade(theme::kLine, 0.6f));
+    }
+    dl->AddLine(ImVec2(o.x, yFor(0.0)), ImVec2(o.x + size.x, yFor(0.0)),
+                theme::fade(theme::kTextFaint, 0.9f));
+
+    // The curve, plus a translucent fill down to the 0 dB line so a boost and
+    // a cut are distinguishable at a glance.
+    constexpr int kPoints = 160;
+    ImVec2 pts[kPoints];
+    for (int i = 0; i < kPoints; ++i) {
+        const double t = static_cast<double>(i) / (kPoints - 1);
+        const double f = std::pow(10.0, std::log10(kMinHz) +
+                                        t * (std::log10(kMaxHz) - std::log10(kMinHz)));
+        const double db = dsp::ChannelStrip::responseDb(p, f, kSampleRate);
+        pts[i] = ImVec2(o.x + size.x * static_cast<float>(t),
+                        std::clamp(yFor(db), o.y + 1.0f, o.y + size.y - 1.0f));
+    }
+    const float zeroY = yFor(0.0);
+    for (int i = 0; i + 1 < kPoints; ++i) {
+        dl->AddQuadFilled(ImVec2(pts[i].x, zeroY), ImVec2(pts[i + 1].x, zeroY),
+                          pts[i + 1], pts[i], theme::fade(theme::kAccent, 0.16f));
+    }
+    dl->AddPolyline(pts, kPoints, theme::kAccent, 0, 2.0f);
+
+    ImGui::Dummy(size);
+}
+
 void drawEffects(Bus& b) {
     bool changed = false;
 
@@ -502,6 +552,9 @@ void drawEffects(Bus& b) {
     tip("Reset every band to no change");
 
     ImGui::Spacing();
+    drawEqCurve(b.eq, ImVec2(-FLT_MIN, 96.0f * g_scale));
+    ImGui::Spacing();
+
     ImGui::BeginDisabled(!b.eq.enabled);
     if (ImGui::BeginTable("eq", 4, ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("band", ImGuiTableColumnFlags_WidthFixed, 110.0f * g_scale);
