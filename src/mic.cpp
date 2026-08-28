@@ -139,18 +139,30 @@ void MicCapture::stop() {
 void MicCapture::run() {
     ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
+    // A microphone that is unplugged and plugged back in should come back,
+    // not stay gone until openmix is restarted.
+    bool announced = false;
+    while (::WaitForSingleObject(stopEvt_, 0) != WAIT_OBJECT_0) {
+        captureOnce();
+        if (!announced) {
+            ::SetEvent(readyEvt_);
+            announced = true;
+        }
+        if (::WaitForSingleObject(stopEvt_, 500) == WAIT_OBJECT_0) break;
+    }
+    ::CoUninitialize();
+}
+
+bool MicCapture::captureOnce() {
     auto bail = [&](const std::string& what) {
         startErr_ = what;
-        ok_ = false;
-        ::SetEvent(readyEvt_);
-        ::CoUninitialize();
+        return false;
     };
 
     ComPtr<IMMDeviceEnumerator> devEnum;
     if (FAILED(::CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
                                   IID_PPV_ARGS(&devEnum)))) {
-        bail("no device enumerator");
-        return;
+        return bail("no device enumerator");
     }
 
     // Never capture one of our own virtual microphones -- that would route the
@@ -175,8 +187,7 @@ void MicCapture::run() {
                 }
             }
             if (!dev) {
-                bail("no input device matching \"" + deviceMatch_ + "\"");
-                return;
+                return bail("no input device matching \"" + deviceMatch_ + "\"");
             }
         }
         if (!dev) {
@@ -202,16 +213,14 @@ void MicCapture::run() {
             }
         }
         if (!dev) {
-            bail("no input device available");
-            return;
+            return bail("no input device available");
         }
     }
 
     ComPtr<IAudioClient> client;
     if (FAILED(dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
                              reinterpret_cast<void**>(&client)))) {
-        bail("could not activate " + deviceName_);
-        return;
+        return bail("could not activate " + deviceName_);
     }
 
     WAVEFORMATEXTENSIBLE wfx{};
@@ -235,32 +244,28 @@ void MicCapture::run() {
     // a second buffer on top of it.
     if (FAILED(client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags,
                                   0, 0, &wfx.Format, nullptr))) {
-        bail("Initialize failed on " + deviceName_);
-        return;
+        return bail("Initialize failed on " + deviceName_);
     }
 
     HANDLE bufEvt = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (FAILED(client->SetEventHandle(bufEvt))) {
         ::CloseHandle(bufEvt);
-        bail("SetEventHandle failed");
-        return;
+        return bail("SetEventHandle failed");
     }
 
     ComPtr<IAudioCaptureClient> capture;
     if (FAILED(client->GetService(__uuidof(IAudioCaptureClient),
                                   reinterpret_cast<void**>(&capture)))) {
         ::CloseHandle(bufEvt);
-        bail("GetService failed");
-        return;
+        return bail("GetService failed");
     }
     if (FAILED(client->Start())) {
         ::CloseHandle(bufEvt);
-        bail("Start failed");
-        return;
+        return bail("Start failed");
     }
 
     ok_ = true;
-    ::SetEvent(readyEvt_);
+    startErr_.clear();
 
     DWORD taskIndex = 0;
     HANDLE mmcss = ::AvSetMmThreadCharacteristicsW(L"Audio", &taskIndex);
@@ -317,5 +322,5 @@ void MicCapture::run() {
     client->Stop();
     if (mmcss) ::AvRevertMmThreadCharacteristics(mmcss);
     ::CloseHandle(bufEvt);
-    ::CoUninitialize();
+    return true;
 }

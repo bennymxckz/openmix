@@ -135,6 +135,9 @@ public:
 
 private:
     void run();
+    // One attempt at opening the input and capturing; run() keeps retrying so
+    // a device that disappears can come back.
+    bool captureOnce();
     static DWORD WINAPI thunk(LPVOID self);
 
     FloatRing* sink_ = nullptr;
@@ -165,6 +168,9 @@ public:
 
 private:
     void run();
+    // One attempt at opening the device and streaming. Returns when the
+    // device fails or a stop is requested; run() keeps trying.
+    bool streamOnce();
     static DWORD WINAPI thunk(LPVOID self);
 
     std::vector<Bus>* buses_ = nullptr;

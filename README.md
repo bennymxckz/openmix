@@ -147,6 +147,10 @@ identifies every URB by sequence number and allows out-of-order responses,
 which is what lets the socket reader dispatch without ever blocking on
 pacing — one direction stalling the other was an audible bug once already.
 
+**Recovery.** The monitor output and the microphone each retry rather than
+give up. Unplugging a headset should be a gap in the audio, not the end of it
+until openmix is restarted.
+
 **Identity.** A channel's USB product ID and serial derive from a stable key,
 not its display name, so renaming a channel does not make Windows register
 brand-new hardware and orphan your per-application assignments.

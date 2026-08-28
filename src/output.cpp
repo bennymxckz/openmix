@@ -145,17 +145,33 @@ void MonitorOutput::stop() {
 void MonitorOutput::run() {
     ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
+    // Devices come and go: a headset is unplugged, a monitor with speakers
+    // sleeps, Windows switches the default. Losing the output should be a gap
+    // in the audio, not the end of it.
+    bool announced = false;
+    while (::WaitForSingleObject(stopEvt_, 0) != WAIT_OBJECT_0) {
+        streamOnce();
+        if (!announced) {
+            ::SetEvent(readyEvt_);
+            announced = true;
+        }
+        // A device coming back takes a moment; retrying instantly just burns
+        // CPU while Windows is still enumerating it.
+        if (::WaitForSingleObject(stopEvt_, 500) == WAIT_OBJECT_0) break;
+    }
+    ::CoUninitialize();
+}
+
+bool MonitorOutput::streamOnce() {
     auto bail = [&](const std::string& what) {
         startErr_ = what;
-        ::SetEvent(readyEvt_);
-        ::CoUninitialize();
+        return false;
     };
 
     ComPtr<IMMDeviceEnumerator> devEnum;
     if (FAILED(::CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
                                   IID_PPV_ARGS(&devEnum)))) {
-        bail("no device enumerator");
-        return;
+        return bail("no device enumerator");
     }
 
     // Choosing the device matters: rendering the monitor mix into one of our
@@ -181,8 +197,7 @@ void MonitorOutput::run() {
                 }
             }
             if (!dev) {
-                bail("no output device matching \"" + deviceMatch_ + "\"");
-                return;
+                return bail("no output device matching \"" + deviceMatch_ + "\"");
             }
         }
 
@@ -213,16 +228,14 @@ void MonitorOutput::run() {
             }
         }
         if (!dev) {
-            bail("no non-openmix output device available");
-            return;
+            return bail("no non-openmix output device available");
         }
     }
 
     ComPtr<IAudioClient> client;
     if (FAILED(dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
                              reinterpret_cast<void**>(&client)))) {
-        bail("could not activate " + deviceName_);
-        return;
+        return bail("could not activate " + deviceName_);
     }
 
     WAVEFORMATEXTENSIBLE wfx{};
@@ -243,7 +256,7 @@ void MonitorOutput::run() {
 
     HRESULT hr = client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags,
                                     300000 /* 30 ms */, 0, &wfx.Format, nullptr);
-    if (FAILED(hr)) { bail("Initialize failed on " + deviceName_); return; }
+    if (FAILED(hr)) return bail("Initialize failed on " + deviceName_);
 
     UINT32 bufferFrames = 0;
     client->GetBufferSize(&bufferFrames);
@@ -251,25 +264,22 @@ void MonitorOutput::run() {
     HANDLE bufEvt = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (FAILED(client->SetEventHandle(bufEvt))) {
         ::CloseHandle(bufEvt);
-        bail("SetEventHandle failed");
-        return;
+        return bail("SetEventHandle failed");
     }
 
     ComPtr<IAudioRenderClient> render;
     if (FAILED(client->GetService(__uuidof(IAudioRenderClient),
                                   reinterpret_cast<void**>(&render)))) {
         ::CloseHandle(bufEvt);
-        bail("GetService failed");
-        return;
+        return bail("GetService failed");
     }
     if (FAILED(client->Start())) {
         ::CloseHandle(bufEvt);
-        bail("Start failed");
-        return;
+        return bail("Start failed");
     }
 
     bufferMs_ = (1000.0 * bufferFrames) / kSampleRate;
-    ::SetEvent(readyEvt_);
+    startErr_.clear();
 
     DWORD taskIndex = 0;
     HANDLE mmcss = ::AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
@@ -288,6 +298,8 @@ void MonitorOutput::run() {
         if (w == WAIT_TIMEOUT) continue;
 
         UINT32 padding = 0;
+        // A device that has gone away fails here; that is the signal to go
+        // back around and look for it again.
         if (FAILED(client->GetCurrentPadding(&padding))) break;
         const UINT32 avail = bufferFrames - padding;
         if (avail == 0) continue;
@@ -321,5 +333,5 @@ void MonitorOutput::run() {
     client->Stop();
     if (mmcss) ::AvRevertMmThreadCharacteristics(mmcss);
     ::CloseHandle(bufEvt);
-    ::CoUninitialize();
+    return true;
 }
