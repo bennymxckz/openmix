@@ -124,6 +124,9 @@ private:
 // IS the audio clock the host synchronises to. Completing URBs the instant
 // they arrive tells the host the device drains infinitely fast.
 constexpr double kLeadSeconds = 0.004;     // finish early, keep URBs in flight
+// How much audio the monitor is allowed to be holding before we stop accepting
+// more. This is the playback latency, and it is what bounds drift.
+constexpr size_t kBacklogMs = 30;
 constexpr double kResyncSeconds = 0.25;
 
 struct Pacer {
@@ -384,7 +387,21 @@ bool UsbipServer::handleStreaming(SOCKET s, VirtualEndpoint& ep) {
 
                 const unsigned long long frames = samples / usbaudio::kChannels;
                 ep.framesIn.fetch_add(frames, std::memory_order_relaxed);
-                pacer.wait(frames, qpf);
+
+                // Clock-lock to the consumer rather than to a wall clock.
+                // Accepting more only once the monitor has drained what we
+                // already handed it makes the real output device the master,
+                // so there is no drift between them to accumulate. The bound
+                // stops a stalled monitor from wedging the USB endpoint.
+                if (ep.sink) {
+                    const size_t target =
+                        (usbaudio::kSampleRate * usbaudio::kChannels * kBacklogMs) / 1000;
+                    for (int guard = 0; guard < 200 && ep.sink->readable() > target; ++guard) {
+                        ::Sleep(1);
+                    }
+                } else {
+                    pacer.wait(frames, qpf);
+                }
             }
 
             for (auto& d : j.iso) {
@@ -421,6 +438,15 @@ bool UsbipServer::handleStreaming(SOCKET s, VirtualEndpoint& ep) {
                 constexpr size_t kTargetMs = 12;
                 const size_t target =
                     (usbaudio::kSampleRate * usbaudio::kChannels * kTargetMs) / 1000;
+
+                // Wait for the producer to supply this packet rather than
+                // pacing off a wall clock, so the rate follows whatever fills
+                // the ring -- the microphone, or the playback side of a duplex
+                // channel -- and cannot drift against it.
+                for (int guard = 0; guard < 200 && ep.source->readable() < samples; ++guard) {
+                    ::Sleep(1);
+                }
+
                 ep.source->trimTo(target + samples);
                 ep.source->read(scratch.data(), samples);
 
@@ -436,7 +462,7 @@ bool UsbipServer::handleStreaming(SOCKET s, VirtualEndpoint& ep) {
                     pcm[i] = static_cast<int16_t>(v * 32767.0f);
                 }
                 ep.framesIn.fetch_add(samples / usbaudio::kChannels, std::memory_order_relaxed);
-                pacer.wait(samples / usbaudio::kChannels, qpf);
+                if (!ep.source) pacer.wait(samples / usbaudio::kChannels, qpf);
             }
 
             for (auto& d : j.iso) {

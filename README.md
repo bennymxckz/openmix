@@ -122,9 +122,7 @@ Two test modes verify this without hardware or listening:
     build\openmix-cli.exe --dsptest      filter and dynamics response, offline
     build\openmix-cli.exe --selftest     round trip through a live channel
 
-Not yet: an installer, and adaptive resampling
-to correct long-run clock drift between the USB packet clock and the render
-device. Expect an occasional glitch on multi-hour sessions until that lands.
+Not yet: an installer.
 
 The microphone currently passes your input device through unprocessed and is
 not folded into the monitor mix, so you will not hear yourself.
