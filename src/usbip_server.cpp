@@ -251,13 +251,47 @@ bool UsbipServer::handleStreaming(SOCKET s, VirtualEndpoint& ep) {
     // have been played out.
     LARGE_INTEGER qpf{};
     ::QueryPerformanceFrequency(&qpf);
-    LARGE_INTEGER base{};
-    bool clockRunning = false;
-    unsigned long long framesAccepted = 0;
 
     // Complete slightly early so the host always has URBs in flight.
     constexpr double kLeadSeconds = 0.004;
     constexpr double kResyncSeconds = 0.25;
+    // Both endpoints of a duplex device share this thread, so a long sleep in
+    // one direction stalls the other. Cap it and let the next packet catch up.
+    constexpr double kMaxSleepSeconds = 0.008;
+
+    // One clock per direction. A duplex device carries both an OUT and an IN
+    // endpoint on this single connection, and a shared counter would advance
+    // the virtual clock at twice real time -- pacing both streams into
+    // progressively longer sleeps until the audio breaks up.
+    struct Pacer {
+        LARGE_INTEGER base{};
+        bool running = false;
+        unsigned long long frames = 0;
+
+        void wait(unsigned long long added, LONGLONG qpf) {
+            frames += added;
+            LARGE_INTEGER now{};
+            ::QueryPerformanceCounter(&now);
+            if (!running) {
+                base = now;
+                running = true;
+            }
+            const double elapsed =
+                static_cast<double>(now.QuadPart - base.QuadPart) / static_cast<double>(qpf);
+            const double due =
+                static_cast<double>(frames) / usbaudio::kSampleRate - kLeadSeconds;
+            const double w = due - elapsed;
+            if (w > 0.0) {
+                ::Sleep(static_cast<DWORD>((w < kMaxSleepSeconds ? w : kMaxSleepSeconds) * 1000.0));
+            } else if (w < -kResyncSeconds) {
+                // The stream paused (app stopped, or alt-setting toggled).
+                // Restart rather than sprinting to catch up.
+                base = now;
+                frames = 0;
+            }
+        }
+    };
+    Pacer outPacer, inPacer;
 
     for (;;) {
         uint8_t raw[kHeaderSize];
@@ -348,27 +382,7 @@ bool UsbipServer::handleStreaming(SOCKET s, VirtualEndpoint& ep) {
                 ep.framesIn.fetch_add(frames, std::memory_order_relaxed);
 
                 // Pace this completion to the device's virtual playout clock.
-                framesAccepted += frames;
-                LARGE_INTEGER now{};
-                ::QueryPerformanceCounter(&now);
-                if (!clockRunning) {
-                    base = now;
-                    clockRunning = true;
-                }
-                const double elapsed =
-                    static_cast<double>(now.QuadPart - base.QuadPart) / static_cast<double>(qpf.QuadPart);
-                const double due =
-                    static_cast<double>(framesAccepted) / usbaudio::kSampleRate - kLeadSeconds;
-                const double wait = due - elapsed;
-
-                if (wait > 0.0) {
-                    ::Sleep(static_cast<DWORD>(wait * 1000.0));
-                } else if (wait < -kResyncSeconds) {
-                    // The stream paused (app stopped, or alt-setting toggled).
-                    // Restart the clock rather than sprinting to catch up.
-                    base = now;
-                    framesAccepted = 0;
-                }
+                outPacer.wait(frames, qpf.QuadPart);
             }
 
             r.actualLength = static_cast<int32_t>(consumed ? consumed : data.size());
@@ -419,22 +433,7 @@ bool UsbipServer::handleStreaming(SOCKET s, VirtualEndpoint& ep) {
             // Same virtual playout clock as the OUT path: deliver at real time
             // or the host will drain us as fast as the socket allows.
             if (samples) {
-                const unsigned long long frames = samples / usbaudio::kChannels;
-                framesAccepted += frames;
-                LARGE_INTEGER now{};
-                ::QueryPerformanceCounter(&now);
-                if (!clockRunning) { base = now; clockRunning = true; }
-                const double elapsed =
-                    static_cast<double>(now.QuadPart - base.QuadPart) / static_cast<double>(qpf.QuadPart);
-                const double due =
-                    static_cast<double>(framesAccepted) / usbaudio::kSampleRate - kLeadSeconds;
-                const double wait = due - elapsed;
-                if (wait > 0.0) {
-                    ::Sleep(static_cast<DWORD>(wait * 1000.0));
-                } else if (wait < -kResyncSeconds) {
-                    base = now;
-                    framesAccepted = 0;
-                }
+                inPacer.wait(samples / usbaudio::kChannels, qpf.QuadPart);
             }
         } else {
             // No source attached; report a well-formed empty transfer.
