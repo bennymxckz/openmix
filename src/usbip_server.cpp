@@ -184,8 +184,12 @@ bool UsbipServer::start(std::vector<std::unique_ptr<VirtualEndpoint>>* endpoints
         return false;
     }
 
+    // Not SO_REUSEADDR: on Windows that permits a second process to bind the
+    // same address and steal connections, which would let two openmix
+    // instances each publish a full set of devices. Exclusive use makes the
+    // second bind fail, which is the behaviour we want.
     BOOL yes = TRUE;
-    ::setsockopt(listen_, SOL_SOCKET, SO_REUSEADDR,
+    ::setsockopt(listen_, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
                  reinterpret_cast<const char*>(&yes), sizeof(yes));
 
     sockaddr_in addr{};

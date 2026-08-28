@@ -795,6 +795,18 @@ void applyStyle() {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
+    // A second instance would publish its own full set of devices and fight
+    // the first for them. Show the window that is already running instead.
+    HANDLE only = ::CreateMutexW(nullptr, TRUE, L"openmix.single-instance");
+    if (only && ::GetLastError() == ERROR_ALREADY_EXISTS) {
+        if (HWND existing = ::FindWindowW(L"openmixWindow", nullptr)) {
+            ::ShowWindow(existing, SW_SHOW);
+            ::SetForegroundWindow(existing);
+        }
+        ::CloseHandle(only);
+        return 0;
+    }
+
     ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     ::timeBeginPeriod(1);   // the USB pacer sleeps in ~1 ms steps
 
@@ -926,5 +938,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
 
     ::timeEndPeriod(1);
     ::CoUninitialize();
+    if (only) ::CloseHandle(only);
     return 0;
 }
