@@ -578,8 +578,20 @@ void drawUi() {
 
     if (!g_engine.namesApplied()) {
         ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.3f, 1.0f),
-                           "Windows refused the device rename - run openmix as "
-                           "administrator once to apply the names.");
+                           "Channels are showing as \"Speakers (Openmix - ...)\".");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Fix names")) {
+            // Renaming an endpoint is an administrator write, so this has to
+            // elevate. It is needed once: the name persists.
+            wchar_t exe[MAX_PATH]{};
+            ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
+            std::wstring cli(exe);
+            const size_t slash = cli.find_last_of(L'\\');
+            if (slash != std::wstring::npos) cli = cli.substr(0, slash + 1);
+            cli += L"openmix-cli.exe";
+            ::ShellExecuteW(nullptr, L"runas", cli.c_str(), L"--fix-names",
+                            nullptr, SW_HIDE);
+        }
     }
 
     ImGui::Separator();

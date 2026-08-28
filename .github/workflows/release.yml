@@ -1,0 +1,70 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build
+
+      # A release that fails its own checks should not be published.
+      - name: DSP checks
+        run: build\openmix-cli.exe --dsptest
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v',''
+          New-Item -ItemType Directory -Path "dist/openmix-$version" -Force | Out-Null
+          Copy-Item build/openmix.exe,build/openmix-cli.exe,README.md,LICENSE "dist/openmix-$version"
+          New-Item -ItemType Directory -Path "dist/openmix-$version/tools" -Force | Out-Null
+          Copy-Item tools/cleanup-devices.ps1 "dist/openmix-$version/tools"
+          Compress-Archive -Path "dist/openmix-$version/*" `
+            -DestinationPath "dist/openmix-$version-windows-x64.zip" -Force
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          body: |
+            ## Requires usbip-win2
+
+            openmix publishes its channels as virtual USB audio devices, so it
+            needs that signed transport driver. Install
+            [v.0.9.7.7](https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.7.7)
+            first — not v.0.9.7.8, whose own notes warn of memory corruption.
+
+            ## Then
+
+            Unzip and run `openmix.exe`. Channels appear in Windows sound
+            settings; point applications at them and pick your headphones and
+            microphone in the window.
+
+            To have them named `Openmix - Game` rather than
+            `Speakers (Openmix - Game)`, run once as administrator while
+            openmix is running:
+
+            ```
+            openmix-cli.exe --fix-names
+            ```
+
+            Windows composes USB audio endpoint names itself and a device
+            cannot override them, so setting the endpoint's own name is the
+            only thing that sticks.
