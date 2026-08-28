@@ -114,7 +114,9 @@ If old entries have accumulated from earlier versions, clear them with
 - Optional start with Windows, straight to the tray.
 - Optional global Ctrl+Alt+M to mute the microphone from anywhere.
 - Each strip names the applications playing to it, so routing can be
-  confirmed rather than assumed.
+  confirmed rather than assumed. A channel with nothing on it says so, and
+  clicking it opens the Windows page where applications are assigned.
+- The window remembers where you put it.
 
 ## Testing
 

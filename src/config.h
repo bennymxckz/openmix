@@ -12,6 +12,8 @@ class Config {
 public:
     // Loads the file if present. Missing file is not an error -- defaults win.
     void load();
+    // Whether a settings file was found. False means this is a first run.
+    bool existed() const { return existed_; }
     bool save() const;
 
     std::string get(const std::string& key, const std::string& fallback = {}) const;
@@ -26,6 +28,7 @@ public:
 
 private:
     std::map<std::string, std::string> values_;
+    bool existed_ = false;
 };
 
 // Start openmix when the user signs in, via the HKCU Run key. Registering

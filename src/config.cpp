@@ -58,6 +58,7 @@ void Config::load() {
     if (p.empty()) return;
     std::ifstream f(p);
     if (!f) return;
+    existed_ = true;
 
     std::string line;
     while (std::getline(f, line)) {

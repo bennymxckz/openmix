@@ -65,6 +65,7 @@ std::vector<std::string> g_channels{"Game", "Chat", "Media"};
 char g_newChannel[32] = {};
 bool g_autostart = false;
 bool g_showSettings = false;
+bool g_showWelcome = false;
 bool g_micHotkey = false;
 bool g_hotkeyFailed = false;
 
@@ -438,6 +439,8 @@ void restartEngine() {
 
 float dbFromGain(float g) { return 20.0f * std::log10(g > 0.0005f ? g : 0.0005f); }
 float gainFromDb(float db) { return db <= -59.5f ? 0.0f : std::pow(10.0f, db / 20.0f); }
+
+void openWindowsAppVolume();
 
 void tip(const char* text) {
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
@@ -871,6 +874,10 @@ void drawSettings() {
         ImGui::PopFont();
     }
 
+    if (ImGui::Button("Open Windows sound settings")) openWindowsAppVolume();
+    tip("Where applications are pointed at a channel");
+    ImGui::Spacing();
+
     if (ImGui::Checkbox("Start with Windows", &g_autostart)) {
         if (!setAutostart(g_autostart)) {
             g_autostart = autostartEnabled();
@@ -912,6 +919,49 @@ void drawSettings() {
     }
     tip("Plain text; safe to edit while openmix is closed");
     endCard();
+}
+
+// Windows' per-application output setting is the one step openmix cannot do
+// for itself, so at least take the user straight to it.
+void openWindowsAppVolume() {
+    ::ShellExecuteA(nullptr, "open", "ms-settings:apps-volume", nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+// Shown once, on the first run. Four strips and no explanation is not a
+// starting point for someone who has just unzipped this.
+void drawWelcome() {
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::toVec(theme::kPanel));
+    ImGui::BeginChild("welcome", ImVec2(0, 0),
+                      ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
+
+    ImGui::PushFont(g_fontHead);
+    ImGui::TextUnformatted("Welcome to openmix");
+    ImGui::PopFont();
+    ImGui::Spacing();
+
+    ImGui::TextWrapped(
+        "Each channel below is now a device in Windows. Send an application to "
+        "one and it gets its own fader here, and its own track in OBS.");
+    ImGui::Spacing();
+
+    ImGui::PushFont(g_fontSmall);
+    mix::textDim("1.  Pick your headphones and microphone above.");
+    mix::textDim("2.  Point applications at the channels in Windows sound settings.");
+    mix::textDim("3.  In OBS, add each channel as an Audio Input Capture source.");
+    ImGui::PopFont();
+    ImGui::Spacing();
+
+    if (ImGui::Button("Open Windows sound settings")) openWindowsAppVolume();
+    ImGui::SameLine();
+    if (ImGui::Button("Got it")) {
+        g_showWelcome = false;
+        g_config.setBool("welcomed", true);
+        g_config.save();
+    }
+
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::Dummy(ImVec2(0, 10.0f * g_scale));
 }
 
 void drawBanner(const char* text, ImU32 color) {
@@ -993,6 +1043,8 @@ void drawUi() {
                    theme::kMeterWarn);
     }
     if (!g_notice.empty()) drawBanner(g_notice.c_str(), theme::kMeterWarn);
+
+    if (g_showWelcome && g_engine.running()) drawWelcome();
 
     if (g_showSettings) {
         ImGui::BeginChild("settings", ImVec2(0, 0), false);
@@ -1164,6 +1216,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     g_micDevices = listCaptureDevices();
 
     g_autostart = autostartEnabled();
+    g_showWelcome = !g_config.existed() || !g_config.getBool("welcomed", false);
     if (g_config.getBool("micHotkey", false)) setMicHotkey(true);
     {
         const auto saved = splitChannels(g_config.get("channels"));
