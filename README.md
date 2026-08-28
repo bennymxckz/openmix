@@ -9,6 +9,8 @@ select in Windows sound settings. Point Discord at Chat and Spotify at Media,
 give each its own fader, record them on separate tracks in OBS, and hear a
 monitor mix of the lot in your headphones.
 
+![The openmix mixer](docs/mixer.png)
+
 ## Why this was hard, and how it works
 
 Windows has no user-mode API for creating an audio endpoint. Endpoints are

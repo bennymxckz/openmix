@@ -1288,7 +1288,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
         g_context->ClearRenderTargetView(g_rtv, clear);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
-        const HRESULT hr = g_swapChain->Present(1, 0);
+        // Present every second vblank. openmix is open for hours beside a
+        // game, and a level meter is perfectly readable at 30 fps -- this
+        // roughly halves the cost of having the window on screen.
+        const HRESULT hr = g_swapChain->Present(2, 0);
         g_occluded = (hr == DXGI_STATUS_OCCLUDED);
     }
 
