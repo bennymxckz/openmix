@@ -68,6 +68,10 @@ struct Bus {
     // What you hear in your headphones.
     float gain = 1.0f;
     bool muted = false;
+    // Solo affects monitoring only. It is a way to check one channel, not a
+    // way to change what the stream receives, and it is deliberately not
+    // persisted -- coming back to a silent mixer would be baffling.
+    bool soloed = false;
 
     // What OBS records, independently. Separate rings because each is a
     // single-producer/single-consumer queue with a different consumer: the

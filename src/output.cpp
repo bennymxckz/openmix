@@ -382,13 +382,18 @@ bool MonitorOutput::streamOnce() {
         const size_t samples = static_cast<size_t>(avail) * kChannels;
         mix.assign(samples, 0.0f);
 
+        bool anySolo = false;
+        for (const auto& bus : *buses_) anySolo |= bus.soloed;
+
         for (auto& bus : *buses_) {
             // A capture bus keeps its ring for the USB capture endpoint; its
             // monitor copy lives in the second ring.
             FloatRing& src = bus.isCapture ? bus.stream : bus.ring;
+            // Drained either way: a soloed-out channel must not accumulate a
+            // backlog that plays back when solo is released.
             src.trimTo(maxBacklog);
-            const float g = bus.muted ? 0.0f : bus.gain;
-            src.mixInto(mix.data(), samples, g);
+            const bool audible = anySolo ? bus.soloed : !bus.muted;
+            src.mixInto(mix.data(), samples, audible ? bus.gain : 0.0f);
         }
 
         // Soft clip so a hot sum cannot produce digital overs in the monitor.

@@ -104,7 +104,8 @@ If old entries have accumulated from earlier versions, clear them with
 
 - Four channels by default, and the set is editable — Sonar's are fixed.
   Each channel becomes its own pair of Windows devices.
-- Independent **headphone** and **stream** levels per channel, plus mute.
+- Independent **headphone** and **stream** levels per channel, plus mute
+  and solo. Solo affects monitoring only, never the stream.
 - Per-channel EQ: high-pass and three parametric bands.
 - Microphone noise gate and compressor, applied on the way in so the virtual
   microphone and your own monitoring agree.

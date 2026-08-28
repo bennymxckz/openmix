@@ -579,7 +579,7 @@ void drawStrip(size_t index, Bus& b, bool attached, float rate, float height) {
     const ImU32 accent = theme::channelColor(index);
     ImGui::PushID(static_cast<int>(index));
 
-    const float stripW = 132.0f * g_scale;
+    const float stripW = 138.0f * g_scale;
     ImGui::BeginChild("strip", ImVec2(stripW, height), false,
                       ImGuiWindowFlags_NoScrollbar);
 
@@ -698,11 +698,18 @@ void drawStrip(size_t index, Bus& b, bool attached, float rate, float height) {
     ImGui::SetCursorPosX(12.0f * g_scale);
     const bool dspOn = b.eq.enabled || b.mic.gate.enabled || b.mic.comp.enabled;
     if (mix::pillButton(b.muted ? "MUTED" : "MUTE", b.muted,
-                        ImVec2(62.0f * g_scale, 24.0f * g_scale), theme::kMuted)) {
+                        ImVec2(48.0f * g_scale, 24.0f * g_scale), theme::kMuted)) {
         b.muted = !b.muted;
         saveSettings();
     }
     tip("Silence this in your headphones only");
+
+    ImGui::SameLine(0.0f, 4.0f * g_scale);
+    if (mix::pillButton("S", b.soloed,
+                        ImVec2(26.0f * g_scale, 24.0f * g_scale), theme::kAccent)) {
+        b.soloed = !b.soloed;
+    }
+    tip("Hear only the soloed channels. Does not affect the stream.");
 
     if (b.isCapture && b.streamMuted) {
         // A muted microphone that looks fine is how people talk to nobody for
@@ -713,9 +720,9 @@ void drawStrip(size_t index, Bus& b, bool attached, float rate, float height) {
         d2->AddRect(wp, ImVec2(wp.x + ws.x, wp.y + ws.y), theme::kMuted, 8.0f, 0, 2.0f);
     }
 
-    ImGui::SameLine(0.0f, 6.0f * g_scale);
+    ImGui::SameLine(0.0f, 4.0f * g_scale);
     if (mix::pillButton(b.isCapture ? "FX" : "EQ", dspOn,
-                        ImVec2(36.0f * g_scale, 24.0f * g_scale), theme::kAccent)) {
+                        ImVec2(30.0f * g_scale, 24.0f * g_scale), theme::kAccent)) {
         ImGui::OpenPopup("fx");
     }
     tip(b.isCapture ? "Equaliser, noise gate and compressor" : "Equaliser");
