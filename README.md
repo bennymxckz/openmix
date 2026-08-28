@@ -91,8 +91,15 @@ Keys: `1`-`9` select bus, `+`/`-` gain, `m` mute, `q` quit.
    output device: Discord -> openmix Chat, Spotify -> openmix Media.
 3. Leave your headphones as the system default so the monitor mix lands
    there, and so anything unassigned still reaches your ears.
-4. In OBS, add each openmix device as an Audio Input Capture on its own
-   track. Leave Media off the stream if you do not want Spotify recorded.
+4. In OBS, add each channel as an **Audio Input Capture** source on its own
+   track -- they appear as `Openmix - Game`, `Openmix - Chat` and so on in the
+   recording device list. Leave Media off the stream if you do not want
+   Spotify recorded.
+
+Each playback channel is a duplex device: applications render into the
+playback side, and OBS records the same audio back from the capture side. The
+two faders are independent, so you can drop game audio in your own ears
+without touching what the stream hears, exactly as Sonar does.
 
 ## Status
 

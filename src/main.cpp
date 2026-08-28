@@ -262,7 +262,10 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    for (auto& b : buses) b.ring.reset(kSampleRate / 2, kChannels);
+    for (auto& b : buses) {
+        b.ring.reset(kSampleRate / 2, kChannels);
+        if (!b.isCapture) b.stream.reset(kSampleRate / 4, kChannels);
+    }
 
     MonitorOutput out;
     std::string err;
@@ -280,8 +283,16 @@ int main(int argc, char** argv) {
             const bool cap = buses[i].isCapture;
             ep->device = std::make_unique<usbaudio::Device>(
                 "Openmix - " + buses[i].name, buses[i].name,
-                cap ? usbaudio::Direction::Capture : usbaudio::Direction::Playback);
-            if (cap) ep->source = &buses[i].ring; else ep->sink = &buses[i].ring;
+                cap ? usbaudio::Direction::Capture : usbaudio::Direction::Duplex);
+            if (cap) {
+                ep->source = &buses[i].ring;
+            } else {
+                ep->sink        = &buses[i].ring;
+                ep->streamTap   = &buses[i].stream;
+                ep->source      = &buses[i].stream;
+                ep->streamGain  = &buses[i].streamGain;
+                ep->streamMuted = &buses[i].streamMuted;
+            }
             ep->busid = "1-" + std::to_string(i + 1);
             endpoints.push_back(std::move(ep));
         }

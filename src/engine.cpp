@@ -61,7 +61,10 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
         m.isCapture = true;
         buses_.push_back(std::move(m));
     }
-    for (auto& b : buses_) b.ring.reset(kSampleRate / 2, kChannels);
+    for (auto& b : buses_) {
+        b.ring.reset(kSampleRate / 2, kChannels);
+        if (!b.isCapture) b.stream.reset(kSampleRate / 4, kChannels);
+    }
 
     if (!out_.start(&buses_, cfg_.outMatch, err)) return false;
 
@@ -71,11 +74,17 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
         ep->device = std::make_unique<usbaudio::Device>(
             "Openmix - " + buses_[i].name,   // shown to the user
             buses_[i].name,                  // identity, stable across renames
-            cap ? usbaudio::Direction::Capture : usbaudio::Direction::Playback);
+            cap ? usbaudio::Direction::Capture : usbaudio::Direction::Duplex);
         if (cap) {
             ep->source = &buses_[i].ring;
         } else {
-            ep->sink = &buses_[i].ring;
+            // Playback channels are duplex: applications render in, OBS
+            // records the same audio back out at its own level.
+            ep->sink        = &buses_[i].ring;
+            ep->streamTap   = &buses_[i].stream;
+            ep->source      = &buses_[i].stream;
+            ep->streamGain  = &buses_[i].streamGain;
+            ep->streamMuted = &buses_[i].streamMuted;
         }
         ep->busid = "1-" + std::to_string(i + 1);
         endpoints_.push_back(std::move(ep));

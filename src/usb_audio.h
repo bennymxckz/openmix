@@ -45,7 +45,21 @@ enum : uint8_t {
 };
 
 // Playback devices sink audio from the host; capture devices source it.
-enum class Direction { Playback, Capture };
+// Duplex devices carry both: applications render into the playback side, and
+// OBS records the processed result from the capture side. That is what makes
+// independent monitor and stream levels possible.
+enum class Direction { Playback, Capture, Duplex };
+
+// Terminal and unit IDs, and the endpoint addresses that carry audio.
+constexpr uint8_t ID_PLAY_IT = 1;
+constexpr uint8_t ID_PLAY_FU = 2;
+constexpr uint8_t ID_PLAY_OT = 3;
+constexpr uint8_t ID_CAP_IT  = 4;
+constexpr uint8_t ID_CAP_FU  = 5;
+constexpr uint8_t ID_CAP_OT  = 6;
+
+constexpr uint8_t EP_OUT = 0x01;
+constexpr uint8_t EP_IN  = 0x82;
 
 struct SetupPacket {
     uint8_t  bmRequestType;
@@ -74,19 +88,20 @@ public:
 
     Direction direction() const { return dir_; }
     bool isCapture() const { return dir_ == Direction::Capture; }
+    bool isDuplex() const { return dir_ == Direction::Duplex; }
 
     const std::string& productName() const { return productName_; }
     uint16_t productId() const { return productId_; }
 
-    // True once the host has selected the streaming alt-setting, i.e. audio
-    // is actually flowing.
-    bool streaming() const { return altSetting_ == 1; }
+    // True once the host has selected a streaming alt-setting, i.e. audio is
+    // actually flowing on that interface.
+    bool streaming() const { return altSetting_[0] == 1 || altSetting_[1] == 1; }
 
     // Host-side volume/mute applied through the UAC feature unit. Volume is
     // reported in UAC 1/256 dB units; linearGain() converts to a multiplier.
-    int16_t volumeRaw() const { return volume_; }
-    bool muted() const { return mute_; }
-    float linearGain() const;
+    int16_t volumeRaw(bool captureSide = false) const { return volume_[captureSide ? 1 : 0]; }
+    bool muted(bool captureSide = false) const { return mute_[captureSide ? 1 : 0]; }
+    float linearGain(bool captureSide = false) const;
 
     // Answer a control transfer. Returns false to STALL the endpoint.
     // For device-to-host requests the reply is appended to `out`.
@@ -107,9 +122,9 @@ private:
     std::vector<uint8_t> cfgDesc_;
 
     uint8_t configuration_ = 0;
-    uint8_t altSetting_ = 0;
-    int16_t volume_ = 0;        // 0 dB
-    bool mute_ = false;
+    uint8_t altSetting_[2] = {0, 0};   // one per streaming interface
+    int16_t volume_[2] = {0, 0};       // 0 dB; [0] playback, [1] capture
+    bool mute_[2] = {false, false};
 };
 
 }  // namespace usbaudio

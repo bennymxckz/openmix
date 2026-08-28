@@ -227,14 +227,18 @@ void saveSettings() {
     for (const auto& b : g_engine.buses()) {
         g_config.setFloat("bus." + b.name + ".gain", b.gain);
         g_config.setBool("bus." + b.name + ".mute", b.muted);
+        g_config.setFloat("bus." + b.name + ".streamGain", b.streamGain);
+        g_config.setBool("bus." + b.name + ".streamMute", b.streamMuted);
     }
     g_config.save();
 }
 
 void applySettings() {
     for (auto& b : g_engine.buses()) {
-        b.gain  = g_config.getFloat("bus." + b.name + ".gain", 1.0f);
-        b.muted = g_config.getBool("bus." + b.name + ".mute", false);
+        b.gain        = g_config.getFloat("bus." + b.name + ".gain", 1.0f);
+        b.muted       = g_config.getBool("bus." + b.name + ".mute", false);
+        b.streamGain  = g_config.getFloat("bus." + b.name + ".streamGain", 1.0f);
+        b.streamMuted = g_config.getBool("bus." + b.name + ".streamMute", false);
     }
 }
 
@@ -328,12 +332,13 @@ void drawUi() {
     auto& buses = g_engine.buses();
     const auto& eps = g_engine.endpoints();
 
-    if (ImGui::BeginTable("buses", 5,
+    if (ImGui::BeginTable("buses", 6,
                           ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
-        ImGui::TableSetupColumn("Channel", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-        ImGui::TableSetupColumn("Level", ImGuiTableColumnFlags_WidthFixed, 150.0f);
-        ImGui::TableSetupColumn("Volume", ImGuiTableColumnFlags_WidthFixed, 190.0f);
-        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 55.0f);
+        ImGui::TableSetupColumn("Channel", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+        ImGui::TableSetupColumn("Level", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+        ImGui::TableSetupColumn("Headphones", ImGuiTableColumnFlags_WidthFixed, 175.0f);
+        ImGui::TableSetupColumn("Stream", ImGuiTableColumnFlags_WidthFixed, 175.0f);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 42.0f);
         ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableHeadersRow();
 
@@ -352,26 +357,48 @@ void drawUi() {
 
             ImGui::TableSetColumnIndex(1);
             ImGui::AlignTextToFramePadding();
-            drawMeter(b.ring.takePeak(), 140.0f);
+            drawMeter(b.ring.takePeak(), 110.0f);
 
+            // Headphone level: what you hear.
             ImGui::TableSetColumnIndex(2);
             float db = dbFromGain(b.gain);
-            ImGui::SetNextItemWidth(180.0f);
+            ImGui::SetNextItemWidth(165.0f);
             if (ImGui::SliderFloat("##vol", &db, -60.0f, 12.0f, "%.1f dB")) {
                 b.gain = gainFromDb(db);
             }
             if (ImGui::IsItemDeactivatedAfterEdit()) saveSettings();
 
+            // Stream level: what OBS records, independently.
             ImGui::TableSetColumnIndex(3);
+            if (b.isCapture) {
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextDisabled("to apps");
+            } else {
+                float sdb = dbFromGain(b.streamGain);
+                ImGui::SetNextItemWidth(165.0f);
+                if (ImGui::SliderFloat("##stream", &sdb, -60.0f, 12.0f, "%.1f dB")) {
+                    b.streamGain = gainFromDb(sdb);
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit()) saveSettings();
+                if (ImGui::BeginPopupContextItem("##streamctx")) {
+                    if (ImGui::MenuItem(b.streamMuted ? "Unmute stream" : "Mute stream")) {
+                        b.streamMuted = !b.streamMuted;
+                        saveSettings();
+                    }
+                    ImGui::EndPopup();
+                }
+            }
+
+            ImGui::TableSetColumnIndex(4);
             bool muted = b.muted;
             if (muted) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.25f, 0.22f, 1.0f));
-            if (ImGui::Button(muted ? "Muted" : "Mute", ImVec2(50, 0))) {
+            if (ImGui::Button(muted ? "M" : "m", ImVec2(36, 0))) {
                 b.muted = !muted;
                 saveSettings();
             }
             if (muted) ImGui::PopStyleColor();
 
-            ImGui::TableSetColumnIndex(4);
+            ImGui::TableSetColumnIndex(5);
             ImGui::AlignTextToFramePadding();
             const bool attached = i < eps.size() && eps[i]->attached.load();
             const double r = g_engine.rate(i);
@@ -450,7 +477,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     ::RegisterClassExW(&wc);
 
     g_hwnd = ::CreateWindowW(wc.lpszClassName, L"openmix", WS_OVERLAPPEDWINDOW,
-                             CW_USEDEFAULT, CW_USEDEFAULT, 720, 420,
+                             CW_USEDEFAULT, CW_USEDEFAULT, 900, 440,
                              nullptr, nullptr, hInst, nullptr);
     if (!g_hwnd) return 1;
 

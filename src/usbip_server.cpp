@@ -54,16 +54,19 @@ void fillExported(const VirtualEndpoint& ep, ExportedDevice& d) {
     d.bDeviceProtocol = 0;
     d.bConfigurationValue = 1;
     d.bNumConfigurations = 1;
-    d.bNumInterfaces = 2;
+    d.bNumInterfaces = ep.device->isDuplex() ? 3 : 2;
 }
 
 // The two interfaces we expose, in the order the config descriptor lists them.
 // Identical for playback and capture: the direction lives in the endpoint.
-void writeInterfaces(std::vector<uint8_t>& v) {
+void writeInterfaces(std::vector<uint8_t>& v, bool duplex) {
     // AudioControl
     v.push_back(0x01); v.push_back(0x01); v.push_back(0x00); v.push_back(0x00);
-    // AudioStreaming
+    // AudioStreaming, one per direction
     v.push_back(0x01); v.push_back(0x02); v.push_back(0x00); v.push_back(0x00);
+    if (duplex) {
+        v.push_back(0x01); v.push_back(0x02); v.push_back(0x00); v.push_back(0x00);
+    }
 }
 
 }  // namespace
@@ -195,7 +198,7 @@ void UsbipServer::serveConnection(SOCKET s) {
             ExportedDevice d{};
             fillExported(*ep, d);
             writeExportedDevice(out, d);
-            writeInterfaces(out);
+            writeInterfaces(out, ep->device->isDuplex());
         }
         writeVec(s, out);
         if (verbose) std::printf("\n  usbip: devlist -> %zu device(s)\n", endpoints_->size());
@@ -337,6 +340,9 @@ bool UsbipServer::handleStreaming(SOCKET s, VirtualEndpoint& ep) {
                     scratch[i] = (static_cast<float>(pcm[i]) / 32768.0f) * g;
                 }
                 if (ep.sink) ep.sink->write(scratch.data(), samples);
+                // Duplex: the same audio goes to the capture side, which
+                // applies its own level, so monitor and stream are independent.
+                if (ep.streamTap) ep.streamTap->write(scratch.data(), samples);
 
                 const unsigned long long frames = samples / usbaudio::kChannels;
                 ep.framesIn.fetch_add(frames, std::memory_order_relaxed);
@@ -391,7 +397,9 @@ bool UsbipServer::handleStreaming(SOCKET s, VirtualEndpoint& ep) {
                 ep.source->trimTo(target + samples);
 
                 ep.source->read(scratch.data(), samples);
-                const float g = ep.device->linearGain();
+                float g = ep.device->linearGain(true);
+                if (ep.streamGain) g *= *ep.streamGain;
+                if (ep.streamMuted && *ep.streamMuted) g = 0.0f;
                 int16_t* pcm = reinterpret_cast<int16_t*>(in.data());
                 for (size_t i = 0; i < samples; ++i) {
                     float v = scratch[i] * g;

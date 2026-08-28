@@ -22,6 +22,11 @@ struct VirtualEndpoint {
     std::unique_ptr<usbaudio::Device> device;
     FloatRing* sink = nullptr;       // playback: where host audio lands
     FloatRing* source = nullptr;     // capture: where we take audio from
+    // On a duplex device the same audio is copied here on arrival so the
+    // capture side can serve it to OBS at its own level.
+    FloatRing* streamTap = nullptr;
+    const float* streamGain = nullptr;
+    const bool* streamMuted = nullptr;
     std::string busid;               // e.g. "1-1"
     std::atomic<bool> attached{false};
     std::atomic<unsigned long long> framesIn{0};

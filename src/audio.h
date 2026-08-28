@@ -62,8 +62,18 @@ struct Bus {
     // Capture buses feed a virtual microphone rather than the monitor mix, so
     // the mixer must not consume their ring.
     bool isCapture = false;
+
+    // What you hear in your headphones.
     float gain = 1.0f;
     bool muted = false;
+
+    // What OBS records, independently. Separate rings because each is a
+    // single-producer/single-consumer queue with a different consumer: the
+    // monitor thread drains `ring`, the USB capture endpoint drains `stream`.
+    float streamGain = 1.0f;
+    bool streamMuted = false;
+    FloatRing stream;
+
     FloatRing ring;
     std::vector<std::unique_ptr<ProcessLoopbackCapture>> captures;
     std::vector<std::wstring> matchNames;  // lowercase image names
