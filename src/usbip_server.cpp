@@ -6,6 +6,10 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
 
 using namespace usbip;
 
@@ -68,6 +72,85 @@ void writeInterfaces(std::vector<uint8_t>& v, bool duplex) {
         v.push_back(0x01); v.push_back(0x02); v.push_back(0x00); v.push_back(0x00);
     }
 }
+
+// One in-flight URB, parsed off the wire and handed to a worker.
+struct Job {
+    Header h;
+    std::vector<uint8_t> data;
+    std::vector<IsoDesc> iso;
+    bool isIso = false;
+};
+
+// USB/IP identifies every URB by seqnum, so responses may come back out of
+// order. That is what lets each endpoint run on its own thread.
+class JobQueue {
+public:
+    void push(Job&& j) {
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            q_.push_back(std::move(j));
+        }
+        cv_.notify_one();
+    }
+
+    bool pop(Job& out) {
+        std::unique_lock<std::mutex> lock(m_);
+        cv_.wait(lock, [&] { return !q_.empty() || closed_; });
+        if (q_.empty()) return false;
+        out = std::move(q_.front());
+        q_.pop_front();
+        return true;
+    }
+
+    void close() {
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            closed_ = true;
+        }
+        cv_.notify_all();
+    }
+
+private:
+    std::mutex m_;
+    std::condition_variable cv_;
+    std::deque<Job> q_;
+    bool closed_ = false;
+};
+
+// Real hardware consumes one isochronous packet per USB frame, and that pacing
+// IS the audio clock the host synchronises to. Completing URBs the instant
+// they arrive tells the host the device drains infinitely fast.
+constexpr double kLeadSeconds = 0.004;     // finish early, keep URBs in flight
+constexpr double kResyncSeconds = 0.25;
+
+struct Pacer {
+    LARGE_INTEGER base{};
+    bool running = false;
+    unsigned long long frames = 0;
+
+    void wait(unsigned long long added, LONGLONG qpf) {
+        frames += added;
+        LARGE_INTEGER now{};
+        ::QueryPerformanceCounter(&now);
+        if (!running) {
+            base = now;
+            running = true;
+        }
+        const double elapsed =
+            static_cast<double>(now.QuadPart - base.QuadPart) / static_cast<double>(qpf);
+        const double due =
+            static_cast<double>(frames) / usbaudio::kSampleRate - kLeadSeconds;
+        const double w = due - elapsed;
+        if (w > 0.0) {
+            ::Sleep(static_cast<DWORD>(w * 1000.0));
+        } else if (w < -kResyncSeconds) {
+            // The stream paused (app stopped, or alt-setting toggled). Restart
+            // rather than sprinting to catch up.
+            base = now;
+            frames = 0;
+        }
+    }
+};
 
 }  // namespace
 
@@ -238,183 +321,101 @@ void UsbipServer::serveConnection(SOCKET s) {
 }
 
 bool UsbipServer::handleStreaming(SOCKET s, VirtualEndpoint& ep) {
-    std::vector<uint8_t> data;
-    std::vector<IsoDesc> iso;
-    std::vector<uint8_t> reply;
-    std::vector<float> scratch;
+    LARGE_INTEGER qpfLI{};
+    ::QueryPerformanceFrequency(&qpfLI);
+    const LONGLONG qpf = qpfLI.QuadPart ? qpfLI.QuadPart : 1;
 
-    // Real hardware consumes one isochronous packet per USB frame, and that
-    // pacing IS the audio clock the host synchronises to. Completing URBs the
-    // instant they arrive tells usbaudio.sys the device drains infinitely
-    // fast, so the application empties its render buffer in one burst and then
-    // starves. Hold each completion until the audio it carries would actually
-    // have been played out.
-    LARGE_INTEGER qpf{};
-    ::QueryPerformanceFrequency(&qpf);
+    std::mutex sendMtx;
+    JobQueue outQ, inQ;
 
-    // Complete slightly early so the host always has URBs in flight.
-    constexpr double kLeadSeconds = 0.004;
-    constexpr double kResyncSeconds = 0.25;
-    // Both endpoints of a duplex device share this thread, so a long sleep in
-    // one direction stalls the other. Cap it and let the next packet catch up.
-    constexpr double kMaxSleepSeconds = 0.008;
-
-    // One clock per direction. A duplex device carries both an OUT and an IN
-    // endpoint on this single connection, and a shared counter would advance
-    // the virtual clock at twice real time -- pacing both streams into
-    // progressively longer sleeps until the audio breaks up.
-    struct Pacer {
-        LARGE_INTEGER base{};
-        bool running = false;
-        unsigned long long frames = 0;
-
-        void wait(unsigned long long added, LONGLONG qpf) {
-            frames += added;
-            LARGE_INTEGER now{};
-            ::QueryPerformanceCounter(&now);
-            if (!running) {
-                base = now;
-                running = true;
-            }
-            const double elapsed =
-                static_cast<double>(now.QuadPart - base.QuadPart) / static_cast<double>(qpf);
-            const double due =
-                static_cast<double>(frames) / usbaudio::kSampleRate - kLeadSeconds;
-            const double w = due - elapsed;
-            if (w > 0.0) {
-                ::Sleep(static_cast<DWORD>((w < kMaxSleepSeconds ? w : kMaxSleepSeconds) * 1000.0));
-            } else if (w < -kResyncSeconds) {
-                // The stream paused (app stopped, or alt-setting toggled).
-                // Restart rather than sprinting to catch up.
-                base = now;
-                frames = 0;
-            }
+    auto respond = [&](const Header& r, const std::vector<uint8_t>& payload,
+                       const std::vector<IsoDesc>& iso, bool isIso) {
+        std::vector<uint8_t> reply;
+        writeRetSubmit(reply, r);
+        if (r.direction == DIR_IN && !payload.empty()) {
+            reply.insert(reply.end(), payload.begin(), payload.end());
         }
-    };
-    Pacer outPacer, inPacer;
-
-    for (;;) {
-        uint8_t raw[kHeaderSize];
-        if (!readExact(s, raw, sizeof(raw))) return false;
-
-        Header h{};
-        parseHeader(raw, h);
-
-        if (h.command == CMD_UNLINK) {
-            reply.clear();
-            writeRetUnlink(reply, h, -104 /* ECONNRESET: URB was cancelled */);
-            if (!writeVec(s, reply)) return false;
-            continue;
-        }
-        if (h.command != CMD_SUBMIT) return false;
-
-        const bool isIso = h.isIso();
-        const size_t bufLen = h.transferBufferLength > 0
-                                  ? static_cast<size_t>(h.transferBufferLength) : 0;
-
-        // OUT transfers carry their payload immediately after the header.
-        data.clear();
-        if (h.direction == DIR_OUT && bufLen) {
-            data.resize(bufLen);
-            if (!readExact(s, data.data(), bufLen)) return false;
-        }
-
-        // Isochronous transfers append one descriptor per packet.
-        iso.clear();
         if (isIso) {
-            iso.resize(static_cast<size_t>(h.numberOfPackets));
-            std::vector<uint8_t> rawIso(iso.size() * kIsoDescSize);
-            if (!readExact(s, rawIso.data(), rawIso.size())) return false;
-            for (size_t i = 0; i < iso.size(); ++i) parseIso(&rawIso[i * kIsoDescSize], iso[i]);
+            for (const auto& d : iso) writeIso(reply, d);
         }
+        std::lock_guard<std::mutex> lock(sendMtx);
+        return writeVec(s, reply);
+    };
 
-        Header r = h;
-        r.status = 0;
-        r.errorCount = 0;
-        std::vector<uint8_t> in;
-
-        if (h.ep == 0) {
-            // Control transfer on the default endpoint.
-            usbaudio::SetupPacket sp{};
-            sp.bmRequestType = h.setup[0];
-            sp.bRequest      = h.setup[1];
-            sp.wValue        = static_cast<uint16_t>(h.setup[2] | (h.setup[3] << 8));
-            sp.wIndex        = static_cast<uint16_t>(h.setup[4] | (h.setup[5] << 8));
-            sp.wLength       = static_cast<uint16_t>(h.setup[6] | (h.setup[7] << 8));
-
-            const bool ok = ep.device->handleControl(
-                sp, data.empty() ? nullptr : data.data(), data.size(), in);
-            if (!ok) {
-                r.status = -32;          // EPIPE -> STALL
-                r.actualLength = 0;
-                in.clear();
-            } else {
-                r.actualLength = sp.deviceToHost()
-                                     ? static_cast<int32_t>(in.size())
-                                     : static_cast<int32_t>(data.size());
-            }
-        } else if (h.direction == DIR_OUT) {
-            // Audio: 16-bit little-endian stereo at 48 kHz.
+    // Playback: audio arriving from the host.
+    std::thread outWorker([&] {
+        Pacer pacer;
+        std::vector<float> scratch;
+        Job j;
+        while (outQ.pop(j)) {
             size_t consumed = 0;
-            if (isIso) {
-                for (const auto& d : iso) {
-                    if (d.offset + d.length > data.size()) continue;
-                    consumed += d.length;
+            if (j.isIso) {
+                for (const auto& d : j.iso) {
+                    if (d.offset + d.length <= j.data.size()) consumed += d.length;
                 }
             } else {
-                consumed = data.size();
+                consumed = j.data.size();
             }
 
-            const size_t samples = data.size() / 2;
+            const size_t samples = j.data.size() / 2;
             if (samples) {
                 if (scratch.size() < samples) scratch.resize(samples);
-                const int16_t* pcm = reinterpret_cast<const int16_t*>(data.data());
+                const int16_t* pcm = reinterpret_cast<const int16_t*>(j.data.data());
                 const float g = ep.device->linearGain();
                 for (size_t i = 0; i < samples; ++i) {
                     scratch[i] = (static_cast<float>(pcm[i]) / 32768.0f) * g;
                 }
                 if (ep.sink) ep.sink->write(scratch.data(), samples);
-                // Duplex: the same audio goes to the capture side, which
-                // applies its own level, so monitor and stream are independent.
+                // Duplex: the capture side serves the same audio at its own level.
                 if (ep.streamTap) ep.streamTap->write(scratch.data(), samples);
 
                 const unsigned long long frames = samples / usbaudio::kChannels;
                 ep.framesIn.fetch_add(frames, std::memory_order_relaxed);
-
-                // Pace this completion to the device's virtual playout clock.
-                outPacer.wait(frames, qpf.QuadPart);
+                pacer.wait(frames, qpf);
             }
 
-            r.actualLength = static_cast<int32_t>(consumed ? consumed : data.size());
-            for (auto& d : iso) {
+            for (auto& d : j.iso) {
                 d.actualLength = d.length;
                 d.status = 0;
             }
-        } else if (ep.source) {
-            // Isochronous IN: the host is asking for microphone audio. Always
-            // return full-length packets -- a short packet is read as a glitch,
-            // and the ring zero-fills any shortfall for us.
-            const size_t bytes = bufLen;
+            Header r = j.h;
+            r.status = 0;
+            r.errorCount = 0;
+            r.actualLength = static_cast<int32_t>(consumed ? consumed : j.data.size());
+            r.numberOfPackets = j.isIso ? j.h.numberOfPackets : -1;
+            if (!respond(r, {}, j.iso, j.isIso)) break;
+        }
+    });
+
+    // Capture: audio we hand back to the host.
+    std::thread inWorker([&] {
+        Pacer pacer;
+        std::vector<float> scratch;
+        std::vector<uint8_t> payload;
+        Job j;
+        while (inQ.pop(j)) {
+            const size_t bytes = j.h.transferBufferLength > 0
+                                     ? static_cast<size_t>(j.h.transferBufferLength) : 0;
             const size_t samples = bytes / 2;
-            in.resize(bytes);
-            if (samples) {
+            payload.assign(bytes, 0);
+
+            if (samples && ep.source) {
                 if (scratch.size() < samples) scratch.resize(samples);
 
-                // Bound the backlog before reading. The microphone's clock and
-                // our pacing clock are independent, so without this any drift
-                // accumulates in one direction until the ring is full and stays
-                // pinned there -- heard as speech arriving hundreds of ms late.
-                // Leave one target's worth behind to absorb jitter.
+                // Bound the backlog. The source clock and our pacing clock are
+                // independent, so without this any drift accumulates in one
+                // direction until the ring is full and stays pinned there.
                 constexpr size_t kTargetMs = 12;
                 const size_t target =
                     (usbaudio::kSampleRate * usbaudio::kChannels * kTargetMs) / 1000;
                 ep.source->trimTo(target + samples);
-
                 ep.source->read(scratch.data(), samples);
+
                 float g = ep.device->linearGain(true);
                 if (ep.streamGain) g *= *ep.streamGain;
                 if (ep.streamMuted && *ep.streamMuted) g = 0.0f;
-                int16_t* pcm = reinterpret_cast<int16_t*>(in.data());
+
+                int16_t* pcm = reinterpret_cast<int16_t*>(payload.data());
                 for (size_t i = 0; i < samples; ++i) {
                     float v = scratch[i] * g;
                     if (v > 1.0f) v = 1.0f;
@@ -422,33 +423,98 @@ bool UsbipServer::handleStreaming(SOCKET s, VirtualEndpoint& ep) {
                     pcm[i] = static_cast<int16_t>(v * 32767.0f);
                 }
                 ep.framesIn.fetch_add(samples / usbaudio::kChannels, std::memory_order_relaxed);
+                pacer.wait(samples / usbaudio::kChannels, qpf);
             }
 
-            for (auto& d : iso) {
+            for (auto& d : j.iso) {
                 d.actualLength = d.length;
                 d.status = 0;
             }
+            Header r = j.h;
+            r.status = 0;
+            r.errorCount = 0;
             r.actualLength = static_cast<int32_t>(bytes);
+            r.numberOfPackets = j.isIso ? j.h.numberOfPackets : -1;
+            if (!respond(r, payload, j.iso, j.isIso)) break;
+        }
+    });
 
-            // Same virtual playout clock as the OUT path: deliver at real time
-            // or the host will drain us as fast as the socket allows.
-            if (samples) {
-                inPacer.wait(samples / usbaudio::kChannels, qpf.QuadPart);
+    // Reader: parse URBs and dispatch. It never blocks on pacing, so neither
+    // endpoint of a duplex device can stall the other.
+    bool ok = true;
+    for (;;) {
+        uint8_t raw[kHeaderSize];
+        if (!readExact(s, raw, sizeof(raw))) break;
+
+        Header h{};
+        parseHeader(raw, h);
+
+        if (h.command == CMD_UNLINK) {
+            std::vector<uint8_t> reply;
+            writeRetUnlink(reply, h, -104 /* ECONNRESET: URB was cancelled */);
+            std::lock_guard<std::mutex> lock(sendMtx);
+            if (!writeVec(s, reply)) break;
+            continue;
+        }
+        if (h.command != CMD_SUBMIT) { ok = false; break; }
+
+        Job j;
+        j.h = h;
+        j.isIso = h.isIso();
+
+        const size_t bufLen =
+            h.transferBufferLength > 0 ? static_cast<size_t>(h.transferBufferLength) : 0;
+        if (h.direction == DIR_OUT && bufLen) {
+            j.data.resize(bufLen);
+            if (!readExact(s, j.data.data(), bufLen)) break;
+        }
+        if (j.isIso) {
+            j.iso.resize(static_cast<size_t>(h.numberOfPackets));
+            std::vector<uint8_t> rawIso(j.iso.size() * kIsoDescSize);
+            if (!readExact(s, rawIso.data(), rawIso.size())) break;
+            for (size_t i = 0; i < j.iso.size(); ++i) {
+                parseIso(&rawIso[i * kIsoDescSize], j.iso[i]);
             }
-        } else {
-            // No source attached; report a well-formed empty transfer.
-            r.actualLength = 0;
         }
 
-        reply.clear();
-        r.numberOfPackets = isIso ? h.numberOfPackets : -1;
-        writeRetSubmit(reply, r);
-        if (h.direction == DIR_IN && !in.empty()) {
-            reply.insert(reply.end(), in.begin(), in.end());
+        if (h.ep == 0) {
+            // Control transfers are not paced, and answering them inline keeps
+            // enumeration snappy.
+            usbaudio::SetupPacket sp{};
+            sp.bmRequestType = h.setup[0];
+            sp.bRequest      = h.setup[1];
+            sp.wValue        = static_cast<uint16_t>(h.setup[2] | (h.setup[3] << 8));
+            sp.wIndex        = static_cast<uint16_t>(h.setup[4] | (h.setup[5] << 8));
+            sp.wLength       = static_cast<uint16_t>(h.setup[6] | (h.setup[7] << 8));
+
+            std::vector<uint8_t> in;
+            Header r = h;
+            r.status = 0;
+            r.errorCount = 0;
+            r.numberOfPackets = -1;
+            if (ep.device->handleControl(sp, j.data.empty() ? nullptr : j.data.data(),
+                                         j.data.size(), in)) {
+                r.actualLength = sp.deviceToHost() ? static_cast<int32_t>(in.size())
+                                                   : static_cast<int32_t>(j.data.size());
+            } else {
+                r.status = -32;       // EPIPE -> STALL
+                r.actualLength = 0;
+                in.clear();
+            }
+            if (!respond(r, in, {}, false)) break;
+            continue;
         }
-        if (isIso) {
-            for (const auto& d : iso) writeIso(reply, d);
+
+        if (h.direction == DIR_OUT) {
+            outQ.push(std::move(j));
+        } else {
+            inQ.push(std::move(j));
         }
-        if (!writeVec(s, reply)) return false;
     }
+
+    outQ.close();
+    inQ.close();
+    outWorker.join();
+    inWorker.join();
+    return ok;
 }

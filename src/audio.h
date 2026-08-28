@@ -96,6 +96,11 @@ std::vector<RenderDevice> listCaptureDevices();
 // Returns false when the property store refuses the write.
 bool renameEndpoint(const std::wstring& deviceId, const std::wstring& newName);
 
+// Round-trip audio integrity check: play a tone into a channel's playback side
+// and record it from the same channel's capture side, then look for the gaps a
+// broken clock produces. Requires openmix to be running. Returns 0 on pass.
+int runSelfTest(const std::string& channel, int seconds);
+
 // Pulls audio from a real input device into a ring, which the USB capture
 // endpoint then serves to whichever application selected "openmix Mic".
 class MicCapture {

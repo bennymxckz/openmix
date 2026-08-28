@@ -67,6 +67,8 @@ void usage() {
         "  --no-mic        do not create the openmix Mic device\n"
         "  --list-devices  show available output devices and exit\n"
         "  --fix-names     rename the endpoints to \"Openmix - X\" (needs admin,\n"
+        "  --selftest [CH] play a tone through a channel and check it comes\n"
+        "                  back intact (default Game); openmix must be running\n"
         "                  run once while openmix is running)\n"
         "  --port N        USB/IP listen port (default 3240)\n"
         "  -v              log attach/detach and control traffic\n"
@@ -177,6 +179,8 @@ int main(int argc, char** argv) {
     bool loopbackMode = false;
     bool listDevices = false;
     bool fixNames_ = false;
+    bool selfTest = false;
+    std::string selfTestChannel = "Game";
     bool noMic = false;
     std::string outMatch;
     std::string micMatch;
@@ -190,6 +194,11 @@ int main(int argc, char** argv) {
         if (a == "--endpoints") { loopbackMode = false; continue; }
         if (a == "--list-devices") { listDevices = true; continue; }
         if (a == "--fix-names") { fixNames_ = true; continue; }
+        if (a == "--selftest") {
+            selfTest = true;
+            if (i + 1 < argc && argv[i + 1][0] != 0x2D) selfTestChannel = argv[++i];
+            continue;
+        }
         if (a == "--out" && i + 1 < argc) { outMatch = argv[++i]; continue; }
         if (a == "--mic" && i + 1 < argc) { micMatch = argv[++i]; continue; }
         if (a == "--no-mic") { noMic = true; continue; }
@@ -245,6 +254,12 @@ int main(int argc, char** argv) {
 
     ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     ::timeBeginPeriod(1);   // the USB pacer sleeps in ~1 ms steps
+
+    if (selfTest) {
+        const int rc = runSelfTest(selfTestChannel, 5);
+        ::CoUninitialize();
+        return rc;
+    }
 
     if (fixNames_) {
         const int rc = fixNames();
