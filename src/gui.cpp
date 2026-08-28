@@ -228,23 +228,74 @@ float gainFromDb(float db) {
     return db <= -60.0f ? 0.0f : std::pow(10.0f, db / 20.0f);
 }
 
-// A level meter that reads like hardware: green up to -6 dB, amber to -1,
-// red at the top, so clipping is visible without reading numbers.
-void drawMeter(float peak, float width) {
-    const ImVec2 size(width, 10.0f);
+// Held peak and clip state per channel. A meter without hold shows a
+// transient for one frame, which is the same as not showing it.
+struct MeterState {
+    float level = 0.0f;      // smoothed bar, falls back at a readable rate
+    float hold = 0.0f;       // peak marker
+    float holdAge = 0.0f;    // seconds since the marker was set
+    float clipAge = 1e9f;    // seconds since the last full-scale sample
+};
+std::vector<MeterState> g_meters;
+
+// Amplitude is linear but hearing is not: on a linear meter everything
+// interesting is crushed into the top fifth of the bar. Map to dB instead.
+float meterPosition(float amplitude) {
+    if (amplitude <= 0.0f) return 0.0f;
+    const float db = 20.0f * std::log10(amplitude);
+    constexpr float floorDb = -54.0f;
+    if (db <= floorDb) return 0.0f;
+    if (db >= 0.0f) return 1.0f;
+    return 1.0f - (db / floorDb);
+}
+
+// A level meter that reads like hardware: green through most of the range,
+// amber approaching full scale, red at the top, with a peak marker that hangs
+// so you can see what you just missed.
+void drawMeter(MeterState& m, float peak, float dt, float width) {
+    const ImVec2 size(width, 11.0f);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p = ImGui::GetCursorScreenPos();
 
-    dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), IM_COL32(28, 30, 34, 255), 2.0f);
+    if (peak >= 0.999f) m.clipAge = 0.0f; else m.clipAge += dt;
 
-    const float level = peak > 1.0f ? 1.0f : peak;
-    if (level > 0.0f) {
-        const float w = size.x * level;
-        ImU32 col = IM_COL32(80, 200, 120, 255);
-        if (level > 0.89f)      col = IM_COL32(220, 80, 70, 255);
-        else if (level > 0.5f)  col = IM_COL32(225, 170, 60, 255);
+    const float pos = meterPosition(peak);
+    // Rise instantly, fall at about 40 dB per second: fast enough to follow
+    // speech, slow enough to read.
+    m.level = pos > m.level ? pos : (std::max)(pos, m.level - dt * 0.75f);
+
+    if (pos >= m.hold) {
+        m.hold = pos;
+        m.holdAge = 0.0f;
+    } else {
+        m.holdAge += dt;
+        if (m.holdAge > 1.2f) m.hold = (std::max)(pos, m.hold - dt * 0.5f);
+    }
+
+    dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), IM_COL32(26, 28, 32, 255), 2.0f);
+
+    if (m.level > 0.0f) {
+        const float w = size.x * m.level;
+        ImU32 col = IM_COL32(78, 196, 118, 255);
+        if (m.level > 0.94f)      col = IM_COL32(220, 80, 70, 255);
+        else if (m.level > 0.82f) col = IM_COL32(225, 170, 60, 255);
         dl->AddRectFilled(p, ImVec2(p.x + w, p.y + size.y), col, 2.0f);
     }
+
+    if (m.hold > 0.01f) {
+        const float x = p.x + size.x * m.hold;
+        dl->AddRectFilled(ImVec2(x - 1.0f, p.y), ImVec2(x + 1.0f, p.y + size.y),
+                          IM_COL32(235, 240, 245, 200));
+    }
+
+    // The clip marker latches for a couple of seconds; a one-frame flash of
+    // red is exactly the thing you look away and miss.
+    if (m.clipAge < 2.0f) {
+        dl->AddRectFilled(ImVec2(p.x + size.x - 3.0f, p.y),
+                          ImVec2(p.x + size.x, p.y + size.y),
+                          IM_COL32(255, 70, 60, 255));
+    }
+
     ImGui::Dummy(size);
 }
 
@@ -625,7 +676,8 @@ void drawUi() {
 
             ImGui::TableSetColumnIndex(1);
             ImGui::AlignTextToFramePadding();
-            drawMeter(b.ring.takePeak(), 110.0f);
+            if (g_meters.size() < buses.size()) g_meters.resize(buses.size());
+            drawMeter(g_meters[i], b.ring.takePeak(), ImGui::GetIO().DeltaTime, 110.0f);
 
             // Headphone level: what you hear.
             ImGui::TableSetColumnIndex(2);
