@@ -1,4 +1,4 @@
-// openmix GUI: a mixer window that lives in the tray.
+// openmix: a mixer window that lives in the tray.
 //
 // Dear ImGui over Win32 + D3D11. Chosen because it is MIT (so the project
 // stays MIT), needs no installed runtime, and redraws meters cheaply.
@@ -9,12 +9,12 @@
 #include <shellapi.h>
 #include <timeapi.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
-#include <algorithm>
-#include <cctype>
 
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
@@ -22,6 +22,8 @@
 
 #include "engine.h"
 #include "config.h"
+#include "theme.h"
+#include "widgets.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
@@ -37,43 +39,27 @@ IDXGISwapChain*         g_swapChain = nullptr;
 ID3D11RenderTargetView* g_rtv = nullptr;
 bool                    g_occluded = false;
 bool                    g_inTray = false;
-bool                    g_quitting = false;
 HWND                    g_hwnd = nullptr;
 NOTIFYICONDATAW         g_tray{};
 
+ImFont* g_fontBody = nullptr;
+ImFont* g_fontHead = nullptr;
+ImFont* g_fontSmall = nullptr;
+float   g_scale = 1.0f;
+
 Engine g_engine;
+Config g_config;
 std::string g_startError;
+std::string g_notice;
 std::vector<RenderDevice> g_outDevices;
 std::vector<RenderDevice> g_micDevices;
-std::string g_deviceError;
-Config g_config;
+std::vector<mix::MeterState> g_meters;
 std::vector<std::string> g_channels{"Game", "Chat", "Media"};
 char g_newChannel[32] = {};
-
-std::string joinChannels(const std::vector<std::string>& v) {
-    std::string out;
-    for (size_t i = 0; i < v.size(); ++i) {
-        if (i) out += ",";
-        out += v[i];
-    }
-    return out;
-}
-
-std::vector<std::string> splitChannels(const std::string& s) {
-    std::vector<std::string> out;
-    size_t start = 0;
-    while (start <= s.size()) {
-        const size_t comma = s.find(',', start);
-        const std::string part =
-            s.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
-        if (!part.empty()) out.push_back(part);
-        if (comma == std::string::npos) break;
-        start = comma + 1;
-    }
-    return out;
-}
-
 bool g_autostart = false;
+bool g_showSettings = false;
+
+// ---- device plumbing ---------------------------------------------------
 
 void createRenderTarget() {
     ID3D11Texture2D* back = nullptr;
@@ -91,8 +77,6 @@ void cleanupRenderTarget() {
 bool createDevice(HWND hwnd) {
     DXGI_SWAP_CHAIN_DESC sd{};
     sd.BufferCount = 2;
-    sd.BufferDesc.Width = 0;
-    sd.BufferDesc.Height = 0;
     sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     sd.BufferDesc.RefreshRate.Numerator = 60;
     sd.BufferDesc.RefreshRate.Denominator = 1;
@@ -125,6 +109,8 @@ void cleanupDevice() {
     if (g_device)    { g_device->Release();    g_device = nullptr; }
 }
 
+// ---- tray --------------------------------------------------------------
+
 void addTrayIcon(HWND hwnd) {
     g_tray = {};
     g_tray.cbSize = sizeof(g_tray);
@@ -138,9 +124,7 @@ void addTrayIcon(HWND hwnd) {
     ::Shell_NotifyIconW(NIM_ADD, &g_tray);
 }
 
-void removeTrayIcon() {
-    ::Shell_NotifyIconW(NIM_DELETE, &g_tray);
-}
+void removeTrayIcon() { ::Shell_NotifyIconW(NIM_DELETE, &g_tray); }
 
 void hideToTray(HWND hwnd) {
     ::ShowWindow(hwnd, SW_HIDE);
@@ -160,8 +144,7 @@ void showTrayMenu(HWND hwnd) {
     ::AppendMenuW(menu, MF_STRING, ID_TRAY_SHOW, g_inTray ? L"Show mixer" : L"Hide mixer");
     ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(menu, MF_STRING, ID_TRAY_QUIT, L"Quit openmix");
-    // Required so the menu dismisses when the user clicks elsewhere.
-    ::SetForegroundWindow(hwnd);
+    ::SetForegroundWindow(hwnd);   // so the menu dismisses on an outside click
     ::TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
     ::DestroyMenu(menu);
 }
@@ -171,11 +154,7 @@ LRESULT WINAPI wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     switch (msg) {
         case WM_SIZE:
-            if (wp == SIZE_MINIMIZED) {
-                // Minimising parks it in the tray rather than the taskbar.
-                hideToTray(hwnd);
-                return 0;
-            }
+            if (wp == SIZE_MINIMIZED) { hideToTray(hwnd); return 0; }
             if (g_device) {
                 cleanupRenderTarget();
                 g_swapChain->ResizeBuffers(0, (UINT)LOWORD(lp), (UINT)HIWORD(lp),
@@ -184,13 +163,20 @@ LRESULT WINAPI wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
 
+        case WM_GETMINMAXINFO: {
+            // Below this the strips overlap and the window stops being useful.
+            auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
+            mmi->ptMinTrackSize.x = static_cast<LONG>(560 * g_scale);
+            mmi->ptMinTrackSize.y = static_cast<LONG>(470 * g_scale);
+            return 0;
+        }
+
         case WM_SYSCOMMAND:
             if ((wp & 0xfff0) == SC_KEYMENU) return 0;
             break;
 
         case WM_CLOSE:
-            // Closing hides; quitting is explicit, from the tray menu.
-            hideToTray(hwnd);
+            hideToTray(hwnd);   // quitting is explicit, from the tray menu
             return 0;
 
         case WM_OPENMIX_TRAY:
@@ -206,11 +192,7 @@ LRESULT WINAPI wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (g_inTray) restoreFromTray(hwnd); else hideToTray(hwnd);
                 return 0;
             }
-            if (LOWORD(wp) == ID_TRAY_QUIT) {
-                g_quitting = true;
-                ::PostQuitMessage(0);
-                return 0;
-            }
+            if (LOWORD(wp) == ID_TRAY_QUIT) { ::PostQuitMessage(0); return 0; }
             break;
 
         case WM_DESTROY:
@@ -220,118 +202,62 @@ LRESULT WINAPI wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return ::DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-float dbFromGain(float g) {
-    return 20.0f * std::log10(g > 0.0001f ? g : 0.0001f);
+// ---- settings ----------------------------------------------------------
+
+std::string joinChannels(const std::vector<std::string>& v) {
+    std::string out;
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) out += ",";
+        out += v[i];
+    }
+    return out;
 }
 
-float gainFromDb(float db) {
-    return db <= -60.0f ? 0.0f : std::pow(10.0f, db / 20.0f);
+std::vector<std::string> splitChannels(const std::string& s) {
+    std::vector<std::string> out;
+    size_t start = 0;
+    while (start <= s.size()) {
+        const size_t comma = s.find(',', start);
+        const std::string part =
+            s.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+        if (!part.empty()) out.push_back(part);
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+    return out;
 }
 
-// Held peak and clip state per channel. A meter without hold shows a
-// transient for one frame, which is the same as not showing it.
-struct MeterState {
-    float level = 0.0f;      // smoothed bar, falls back at a readable rate
-    float hold = 0.0f;       // peak marker
-    float holdAge = 0.0f;    // seconds since the marker was set
-    float clipAge = 1e9f;    // seconds since the last full-scale sample
-};
-std::vector<MeterState> g_meters;
-
-// Amplitude is linear but hearing is not: on a linear meter everything
-// interesting is crushed into the top fifth of the bar. Map to dB instead.
-float meterPosition(float amplitude) {
-    if (amplitude <= 0.0f) return 0.0f;
-    const float db = 20.0f * std::log10(amplitude);
-    constexpr float floorDb = -54.0f;
-    if (db <= floorDb) return 0.0f;
-    if (db >= 0.0f) return 1.0f;
-    return 1.0f - (db / floorDb);
-}
-
-// A level meter that reads like hardware: green through most of the range,
-// amber approaching full scale, red at the top, with a peak marker that hangs
-// so you can see what you just missed.
-void drawMeter(MeterState& m, float peak, float dt, float width) {
-    const ImVec2 size(width, 11.0f);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-
-    if (peak >= 0.999f) m.clipAge = 0.0f; else m.clipAge += dt;
-
-    const float pos = meterPosition(peak);
-    // Rise instantly, fall at about 40 dB per second: fast enough to follow
-    // speech, slow enough to read.
-    m.level = pos > m.level ? pos : (std::max)(pos, m.level - dt * 0.75f);
-
-    if (pos >= m.hold) {
-        m.hold = pos;
-        m.holdAge = 0.0f;
-    } else {
-        m.holdAge += dt;
-        if (m.holdAge > 1.2f) m.hold = (std::max)(pos, m.hold - dt * 0.5f);
-    }
-
-    dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), IM_COL32(26, 28, 32, 255), 2.0f);
-
-    if (m.level > 0.0f) {
-        const float w = size.x * m.level;
-        ImU32 col = IM_COL32(78, 196, 118, 255);
-        if (m.level > 0.94f)      col = IM_COL32(220, 80, 70, 255);
-        else if (m.level > 0.82f) col = IM_COL32(225, 170, 60, 255);
-        dl->AddRectFilled(p, ImVec2(p.x + w, p.y + size.y), col, 2.0f);
-    }
-
-    if (m.hold > 0.01f) {
-        const float x = p.x + size.x * m.hold;
-        dl->AddRectFilled(ImVec2(x - 1.0f, p.y), ImVec2(x + 1.0f, p.y + size.y),
-                          IM_COL32(235, 240, 245, 200));
-    }
-
-    // The clip marker latches for a couple of seconds; a one-frame flash of
-    // red is exactly the thing you look away and miss.
-    if (m.clipAge < 2.0f) {
-        dl->AddRectFilled(ImVec2(p.x + size.x - 3.0f, p.y),
-                          ImVec2(p.x + size.x, p.y + size.y),
-                          IM_COL32(255, 70, 60, 255));
-    }
-
-    ImGui::Dummy(size);
-}
-
-// Settings are written on change rather than only at exit, so a crash or a
-// forced quit does not lose them.
 void saveSettings() {
     g_config.set("output", g_engine.monitorDevice());
     g_config.set("mic", g_engine.micDevice());
     for (const auto& b : g_engine.buses()) {
-        g_config.setFloat("bus." + b.name + ".gain", b.gain);
-        g_config.setBool("bus." + b.name + ".mute", b.muted);
-        g_config.setFloat("bus." + b.name + ".streamGain", b.streamGain);
-        g_config.setBool("bus." + b.name + ".streamMute", b.streamMuted);
+        const std::string k = "bus." + b.name + ".";
+        g_config.setFloat(k + "gain", b.gain);
+        g_config.setBool(k + "mute", b.muted);
+        g_config.setFloat(k + "streamGain", b.streamGain);
+        g_config.setBool(k + "streamMute", b.streamMuted);
 
-        const std::string e = "bus." + b.name + ".eq.";
+        const std::string e = k + "eq.";
         g_config.setBool(e + "on", b.eq.enabled);
         const dsp::Band* bands[4] = { &b.eq.hp, &b.eq.low, &b.eq.mid, &b.eq.high };
         const char* names[4] = { "hp", "low", "mid", "high" };
-        if (b.isCapture) {
-            const std::string m = "bus." + b.name + ".";
-            g_config.setBool(m + "gate.on", b.mic.gate.enabled);
-            g_config.setFloat(m + "gate.thresh", b.mic.gate.thresholdDb);
-            g_config.setFloat(m + "gate.hold", b.mic.gate.holdMs);
-            g_config.setFloat(m + "gate.release", b.mic.gate.releaseMs);
-            g_config.setBool(m + "comp.on", b.mic.comp.enabled);
-            g_config.setFloat(m + "comp.thresh", b.mic.comp.thresholdDb);
-            g_config.setFloat(m + "comp.ratio", b.mic.comp.ratio);
-            g_config.setFloat(m + "comp.attack", b.mic.comp.attackMs);
-            g_config.setFloat(m + "comp.release", b.mic.comp.releaseMs);
-            g_config.setFloat(m + "comp.makeup", b.mic.comp.makeupDb);
-        }
         for (int i = 0; i < 4; ++i) {
             g_config.setBool(e + names[i] + ".on", bands[i]->on);
             g_config.setFloat(e + names[i] + ".f", bands[i]->freq);
             g_config.setFloat(e + names[i] + ".g", bands[i]->gainDb);
             g_config.setFloat(e + names[i] + ".q", bands[i]->q);
+        }
+        if (b.isCapture) {
+            g_config.setBool(k + "gate.on", b.mic.gate.enabled);
+            g_config.setFloat(k + "gate.thresh", b.mic.gate.thresholdDb);
+            g_config.setFloat(k + "gate.hold", b.mic.gate.holdMs);
+            g_config.setFloat(k + "gate.release", b.mic.gate.releaseMs);
+            g_config.setBool(k + "comp.on", b.mic.comp.enabled);
+            g_config.setFloat(k + "comp.thresh", b.mic.comp.thresholdDb);
+            g_config.setFloat(k + "comp.ratio", b.mic.comp.ratio);
+            g_config.setFloat(k + "comp.attack", b.mic.comp.attackMs);
+            g_config.setFloat(k + "comp.release", b.mic.comp.releaseMs);
+            g_config.setFloat(k + "comp.makeup", b.mic.comp.makeupDb);
         }
     }
     g_config.save();
@@ -339,145 +265,42 @@ void saveSettings() {
 
 void applySettings() {
     for (auto& b : g_engine.buses()) {
-        // The microphone's headphone fader defaults to silent. Hearing your own
-        // voice unasked is startling, and on speakers it feeds back. The
-        // engine sets this too, but loading settings runs afterwards and would
-        // otherwise put it back to full for anyone with no saved value.
-        b.gain        = g_config.getFloat("bus." + b.name + ".gain",
-                                          b.isCapture ? 0.0f : 1.0f);
-        b.muted       = g_config.getBool("bus." + b.name + ".mute", false);
-        b.streamGain  = g_config.getFloat("bus." + b.name + ".streamGain", 1.0f);
-        b.streamMuted = g_config.getBool("bus." + b.name + ".streamMute", false);
+        const std::string k = "bus." + b.name + ".";
+        // Microphone monitoring defaults to silent: hearing your own voice
+        // unasked is startling, and on speakers it feeds back.
+        b.gain        = g_config.getFloat(k + "gain", b.isCapture ? 0.0f : 1.0f);
+        b.muted       = g_config.getBool(k + "mute", false);
+        b.streamGain  = g_config.getFloat(k + "streamGain", 1.0f);
+        b.streamMuted = g_config.getBool(k + "streamMute", false);
 
-        const std::string e = "bus." + b.name + ".eq.";
+        const std::string e = k + "eq.";
         b.eq.enabled = g_config.getBool(e + "on", false);
         dsp::Band* bands[4] = { &b.eq.hp, &b.eq.low, &b.eq.mid, &b.eq.high };
         const char* names[4] = { "hp", "low", "mid", "high" };
-        if (b.isCapture) {
-            const std::string m = "bus." + b.name + ".";
-            b.mic.gate.enabled     = g_config.getBool(m + "gate.on", false);
-            b.mic.gate.thresholdDb = g_config.getFloat(m + "gate.thresh", b.mic.gate.thresholdDb);
-            b.mic.gate.holdMs      = g_config.getFloat(m + "gate.hold", b.mic.gate.holdMs);
-            b.mic.gate.releaseMs   = g_config.getFloat(m + "gate.release", b.mic.gate.releaseMs);
-            b.mic.comp.enabled     = g_config.getBool(m + "comp.on", false);
-            b.mic.comp.thresholdDb = g_config.getFloat(m + "comp.thresh", b.mic.comp.thresholdDb);
-            b.mic.comp.ratio       = g_config.getFloat(m + "comp.ratio", b.mic.comp.ratio);
-            b.mic.comp.attackMs    = g_config.getFloat(m + "comp.attack", b.mic.comp.attackMs);
-            b.mic.comp.releaseMs   = g_config.getFloat(m + "comp.release", b.mic.comp.releaseMs);
-            b.mic.comp.makeupDb    = g_config.getFloat(m + "comp.makeup", b.mic.comp.makeupDb);
-        }
         for (int i = 0; i < 4; ++i) {
             bands[i]->on     = g_config.getBool(e + names[i] + ".on", bands[i]->on);
             bands[i]->freq   = g_config.getFloat(e + names[i] + ".f", bands[i]->freq);
             bands[i]->gainDb = g_config.getFloat(e + names[i] + ".g", bands[i]->gainDb);
             bands[i]->q      = g_config.getFloat(e + names[i] + ".q", bands[i]->q);
         }
+        if (b.isCapture) {
+            b.mic.gate.enabled     = g_config.getBool(k + "gate.on", false);
+            b.mic.gate.thresholdDb = g_config.getFloat(k + "gate.thresh", b.mic.gate.thresholdDb);
+            b.mic.gate.holdMs      = g_config.getFloat(k + "gate.hold", b.mic.gate.holdMs);
+            b.mic.gate.releaseMs   = g_config.getFloat(k + "gate.release", b.mic.gate.releaseMs);
+            b.mic.comp.enabled     = g_config.getBool(k + "comp.on", false);
+            b.mic.comp.thresholdDb = g_config.getFloat(k + "comp.thresh", b.mic.comp.thresholdDb);
+            b.mic.comp.ratio       = g_config.getFloat(k + "comp.ratio", b.mic.comp.ratio);
+            b.mic.comp.attackMs    = g_config.getFloat(k + "comp.attack", b.mic.comp.attackMs);
+            b.mic.comp.releaseMs   = g_config.getFloat(k + "comp.release", b.mic.comp.releaseMs);
+            b.mic.comp.makeupDb    = g_config.getFloat(k + "comp.makeup", b.mic.comp.makeupDb);
+        }
     }
 }
 
-// One EQ band: enable, frequency, gain and Q. Frequency is logarithmic
-// because hearing is, so a linear slider would waste most of its travel above
-// 10 kHz.
-bool drawBand(const char* label, dsp::Band& b, bool hasGain) {
-    bool changed = false;
-    ImGui::PushID(label);
-    changed |= ImGui::Checkbox("##on", &b.on);
-    ImGui::SameLine();
-    ImGui::TextUnformatted(label);
-    ImGui::SameLine(90.0f);
-
-    ImGui::BeginDisabled(!b.on);
-    ImGui::SetNextItemWidth(150.0f);
-    changed |= ImGui::SliderFloat("##f", &b.freq, 20.0f, 20000.0f, "%.0f Hz",
-                                  ImGuiSliderFlags_Logarithmic);
-    ImGui::SameLine();
-    if (hasGain) {
-        ImGui::SetNextItemWidth(130.0f);
-        changed |= ImGui::SliderFloat("##g", &b.gainDb, -18.0f, 18.0f, "%+.1f dB");
-        ImGui::SameLine();
-    }
-    ImGui::SetNextItemWidth(110.0f);
-    changed |= ImGui::SliderFloat("##q", &b.q, 0.2f, 8.0f, "Q %.2f");
-    ImGui::EndDisabled();
-
-    ImGui::PopID();
-    return changed;
-}
-
-void drawEqPopup(Bus& b) {
-    if (!ImGui::BeginPopup("eq")) return;
-
-    ImGui::Text("%s equaliser", b.name.c_str());
-    ImGui::Separator();
-
-    bool changed = ImGui::Checkbox("Enabled", &b.eq.enabled);
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Flat")) {
-        const bool wasOn = b.eq.enabled;
-        b.eq = dsp::EqParams{};
-        b.eq.enabled = wasOn;
-        changed = true;
-    }
-    ImGui::Spacing();
-
-    ImGui::BeginDisabled(!b.eq.enabled);
-    changed |= drawBand("High-pass", b.eq.hp, false);
-    changed |= drawBand("Low", b.eq.low, true);
-    changed |= drawBand("Mid", b.eq.mid, true);
-    changed |= drawBand("High", b.eq.high, true);
-    ImGui::EndDisabled();
-
-    if (b.isCapture) {
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Text("Microphone dynamics");
-        ImGui::Spacing();
-
-        changed |= ImGui::Checkbox("Noise gate", &b.mic.gate.enabled);
-        ImGui::SameLine();
-        ImGui::TextDisabled("%.0f dB", b.micChain.gateReductionDb());
-        ImGui::BeginDisabled(!b.mic.gate.enabled);
-        ImGui::SetNextItemWidth(200.0f);
-        changed |= ImGui::SliderFloat("Threshold##g", &b.mic.gate.thresholdDb,
-                                      -80.0f, 0.0f, "%.0f dB");
-        ImGui::SetNextItemWidth(200.0f);
-        changed |= ImGui::SliderFloat("Hold##g", &b.mic.gate.holdMs, 0.0f, 500.0f, "%.0f ms");
-        ImGui::SetNextItemWidth(200.0f);
-        changed |= ImGui::SliderFloat("Release##g", &b.mic.gate.releaseMs,
-                                      10.0f, 1000.0f, "%.0f ms");
-        ImGui::EndDisabled();
-
-        ImGui::Spacing();
-        changed |= ImGui::Checkbox("Compressor", &b.mic.comp.enabled);
-        ImGui::SameLine();
-        ImGui::TextDisabled("%.1f dB", b.micChain.compReductionDb());
-        ImGui::BeginDisabled(!b.mic.comp.enabled);
-        ImGui::SetNextItemWidth(200.0f);
-        changed |= ImGui::SliderFloat("Threshold##c", &b.mic.comp.thresholdDb,
-                                      -48.0f, 0.0f, "%.0f dB");
-        ImGui::SetNextItemWidth(200.0f);
-        changed |= ImGui::SliderFloat("Ratio##c", &b.mic.comp.ratio, 1.0f, 12.0f, "%.1f : 1");
-        ImGui::SetNextItemWidth(200.0f);
-        changed |= ImGui::SliderFloat("Attack##c", &b.mic.comp.attackMs, 0.5f, 50.0f, "%.1f ms");
-        ImGui::SetNextItemWidth(200.0f);
-        changed |= ImGui::SliderFloat("Release##c", &b.mic.comp.releaseMs,
-                                      20.0f, 800.0f, "%.0f ms");
-        ImGui::SetNextItemWidth(200.0f);
-        changed |= ImGui::SliderFloat("Makeup##c", &b.mic.comp.makeupDb, 0.0f, 24.0f, "%+.1f dB");
-        ImGui::EndDisabled();
-    }
-
-    if (changed) saveSettings();
-    ImGui::EndPopup();
-}
-
-// Channels are USB devices, so adding or removing one means republishing the
-// device set. Restarting the engine is the honest way to do that; it takes
-// about a second and applications reconnect on their own.
 void restartEngine() {
     saveSettings();
     g_engine.stop();
-
     EngineConfig cfg;
     cfg.playbackBuses = g_channels;
     cfg.outMatch = g_config.get("output");
@@ -486,19 +309,323 @@ void restartEngine() {
     if (g_engine.start(cfg, g_startError)) applySettings();
 }
 
-void drawChannelEditor() {
-    if (!ImGui::CollapsingHeader("Channels")) return;
+float dbFromGain(float g) { return 20.0f * std::log10(g > 0.0005f ? g : 0.0005f); }
+float gainFromDb(float db) { return db <= -59.5f ? 0.0f : std::pow(10.0f, db / 20.0f); }
 
-    ImGui::TextDisabled("Each channel is a device applications can select.");
+void tip(const char* text) {
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        ImGui::PushFont(g_fontSmall);
+        ImGui::SetTooltip("%s", text);
+        ImGui::PopFont();
+    }
+}
+
+// ---- effects panel -----------------------------------------------------
+
+bool drawBand(const char* label, dsp::Band& b, bool hasGain) {
+    bool changed = false;
+    ImGui::PushID(label);
+    ImGui::TableNextRow();
+
+    ImGui::TableSetColumnIndex(0);
+    ImGui::AlignTextToFramePadding();
+    changed |= ImGui::Checkbox("##on", &b.on);
+    ImGui::SameLine();
+    ImGui::TextUnformatted(label);
+
+    ImGui::BeginDisabled(!b.on);
+    ImGui::TableSetColumnIndex(1);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    changed |= ImGui::SliderFloat("##f", &b.freq, 20.0f, 20000.0f, "%.0f Hz",
+                                  ImGuiSliderFlags_Logarithmic);
+    ImGui::TableSetColumnIndex(2);
+    if (hasGain) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        changed |= ImGui::SliderFloat("##g", &b.gainDb, -18.0f, 18.0f, "%+.1f dB");
+    } else {
+        mix::textDim("--");
+    }
+    ImGui::TableSetColumnIndex(3);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    changed |= ImGui::SliderFloat("##q", &b.q, 0.2f, 8.0f, "Q %.2f");
+    ImGui::EndDisabled();
+
+    ImGui::PopID();
+    return changed;
+}
+
+void drawEffects(Bus& b) {
+    bool changed = false;
+
+    ImGui::PushFont(g_fontHead);
+    ImGui::TextUnformatted("Equaliser");
+    ImGui::PopFont();
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("##eqon", &b.eq.enabled);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Flat")) {
+        const bool was = b.eq.enabled;
+        b.eq = dsp::EqParams{};
+        b.eq.enabled = was;
+        changed = true;
+    }
+    tip("Reset every band to no change");
+
+    ImGui::Spacing();
+    ImGui::BeginDisabled(!b.eq.enabled);
+    if (ImGui::BeginTable("eq", 4, ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("band", ImGuiTableColumnFlags_WidthFixed, 110.0f * g_scale);
+        ImGui::TableSetupColumn("freq");
+        ImGui::TableSetupColumn("gain");
+        ImGui::TableSetupColumn("q");
+        changed |= drawBand("High-pass", b.eq.hp, false);
+        changed |= drawBand("Low", b.eq.low, true);
+        changed |= drawBand("Mid", b.eq.mid, true);
+        changed |= drawBand("High", b.eq.high, true);
+        ImGui::EndTable();
+    }
+    ImGui::EndDisabled();
+
+    if (b.isCapture) {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::PushFont(g_fontHead);
+        ImGui::TextUnformatted("Noise gate");
+        ImGui::PopFont();
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("##gateon", &b.mic.gate.enabled);
+        ImGui::SameLine();
+        mix::textDim("%+.0f dB", b.micChain.gateReductionDb());
+        tip("How much the gate is turning the microphone down right now");
+
+        ImGui::BeginDisabled(!b.mic.gate.enabled);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        changed |= ImGui::SliderFloat("Opens above", &b.mic.gate.thresholdDb,
+                                      -80.0f, 0.0f, "%.0f dB");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        changed |= ImGui::SliderFloat("Stays open for", &b.mic.gate.holdMs,
+                                      0.0f, 500.0f, "%.0f ms");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        changed |= ImGui::SliderFloat("Closes over", &b.mic.gate.releaseMs,
+                                      10.0f, 1000.0f, "%.0f ms");
+        ImGui::EndDisabled();
+
+        ImGui::Spacing();
+        ImGui::PushFont(g_fontHead);
+        ImGui::TextUnformatted("Compressor");
+        ImGui::PopFont();
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("##compon", &b.mic.comp.enabled);
+        ImGui::SameLine();
+        mix::textDim("%+.1f dB", b.micChain.compReductionDb());
+        tip("How much the compressor is turning the microphone down right now");
+
+        ImGui::BeginDisabled(!b.mic.comp.enabled);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        changed |= ImGui::SliderFloat("Squeezes above", &b.mic.comp.thresholdDb,
+                                      -48.0f, 0.0f, "%.0f dB");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        changed |= ImGui::SliderFloat("By", &b.mic.comp.ratio, 1.0f, 12.0f, "%.1f : 1");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        changed |= ImGui::SliderFloat("Reacts in", &b.mic.comp.attackMs,
+                                      0.5f, 50.0f, "%.1f ms");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        changed |= ImGui::SliderFloat("Recovers in", &b.mic.comp.releaseMs,
+                                      20.0f, 800.0f, "%.0f ms");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        changed |= ImGui::SliderFloat("Then lift by", &b.mic.comp.makeupDb,
+                                      0.0f, 24.0f, "%+.1f dB");
+        ImGui::EndDisabled();
+    }
+
+    if (changed) saveSettings();
+}
+
+// ---- channel strip -----------------------------------------------------
+
+void drawStrip(size_t index, Bus& b, bool attached, float rate, float height) {
+    const ImU32 accent = theme::channelColor(index);
+    ImGui::PushID(static_cast<int>(index));
+
+    const float stripW = 132.0f * g_scale;
+    ImGui::BeginChild("strip", ImVec2(stripW, height), false,
+                      ImGuiWindowFlags_NoScrollbar);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 origin = ImGui::GetWindowPos();
+    const ImVec2 avail = ImGui::GetWindowSize();
+    dl->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + avail.y),
+                      theme::kPanel, 8.0f);
+    // A colour bar across the top is how you find a strip without reading it.
+    dl->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + 3.0f),
+                      attached ? accent : theme::kTextFaint, 8.0f);
+
+    ImGui::Dummy(ImVec2(0, 8.0f * g_scale));
+    ImGui::Indent(10.0f * g_scale);
+
+    ImGui::PushFont(g_fontHead);
+    ImGui::TextUnformatted(b.name.c_str());
+    ImGui::PopFont();
+
+    ImGui::PushFont(g_fontSmall);
+    if (!attached) {
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(theme::kMuted));
+        ImGui::TextUnformatted("not connected");
+        ImGui::PopStyleColor();
+    } else if (rate > 1000.0f) {
+        mix::textDim("%s", b.isCapture ? "microphone" : "receiving");
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(theme::kTextFaint));
+        ImGui::TextUnformatted("idle");
+        ImGui::PopStyleColor();
+    }
+    ImGui::PopFont();
+
+    ImGui::Unindent(10.0f * g_scale);
+    ImGui::Dummy(ImVec2(0, 6.0f * g_scale));
+
+    // Meter and the two faders, side by side. Left is what you hear, right is
+    // what everyone else hears; that holds on every strip including the mic.
+    const float faderH = height - 172.0f * g_scale;
+    const float meterW = 12.0f * g_scale;
+    const float faderW = 38.0f * g_scale;
+    const float faderGap = 8.0f * g_scale;
+
+    ImGui::SetCursorPosX(12.0f * g_scale);
+    if (g_meters.size() <= index) g_meters.resize(index + 1);
+    mix::verticalMeter(g_meters[index], b.ring.takePeak(),
+                       ImGui::GetIO().DeltaTime, ImVec2(meterW, faderH));
+
+    bool released = false;
+    float db = dbFromGain(b.gain);
+    ImGui::SameLine(0.0f, 6.0f * g_scale);
+    if (mix::verticalFader("mon", &db, ImVec2(faderW, faderH), accent, &released)) {
+        b.gain = gainFromDb(db);
+    }
+    if (released) saveSettings();
+    tip(b.isCapture ? "How loud you hear yourself" : "How loud you hear this");
+
+    float sdb = dbFromGain(b.streamGain);
+    ImGui::SameLine(0.0f, faderGap);
+    if (mix::verticalFader("str", &sdb, ImVec2(faderW, faderH),
+                           theme::mix(accent, theme::kText, 0.45f), &released)) {
+        b.streamGain = gainFromDb(sdb);
+    }
+    if (released) saveSettings();
+    tip(b.isCapture ? "How loud applications hear you"
+                    : "How loud the stream hears this");
+
+    // Each readout is centred under the fader it belongs to.
+    const float monX = 12.0f * g_scale + meterW + 6.0f * g_scale;
+    const float strX = monX + faderW + faderGap;
+    auto centred = [&](float columnX, const char* text) {
+        const float w = ImGui::CalcTextSize(text).x;
+        ImGui::SetCursorPosX(columnX + (faderW - w) * 0.5f);
+        ImGui::TextUnformatted(text);
+    };
+
+    char buf[16];
+    ImGui::PushFont(g_fontSmall);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(theme::kTextDim));
+    std::snprintf(buf, sizeof(buf), "%.1f", db);
+    centred(monX, buf);
+    ImGui::SameLine(0.0f, 0.0f);
+    std::snprintf(buf, sizeof(buf), "%.1f", sdb);
+    centred(strX, buf);
+    ImGui::PopStyleColor();
+
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(theme::kTextFaint));
+    centred(monX, "you");
+    ImGui::SameLine(0.0f, 0.0f);
+    centred(strX, b.isCapture ? "apps" : "stream");
+    ImGui::PopStyleColor();
+    ImGui::PopFont();
+
+    ImGui::Dummy(ImVec2(0, 5.0f * g_scale));
+
+    ImGui::SetCursorPosX(12.0f * g_scale);
+    const bool dspOn = b.eq.enabled || b.mic.gate.enabled || b.mic.comp.enabled;
+    if (mix::pillButton(b.muted ? "MUTED" : "MUTE", b.muted,
+                        ImVec2(62.0f * g_scale, 24.0f * g_scale), theme::kMuted)) {
+        b.muted = !b.muted;
+        saveSettings();
+    }
+    tip("Silence this in your headphones only");
+
+    ImGui::SameLine(0.0f, 6.0f * g_scale);
+    if (mix::pillButton(b.isCapture ? "FX" : "EQ", dspOn,
+                        ImVec2(36.0f * g_scale, 24.0f * g_scale), theme::kAccent)) {
+        ImGui::OpenPopup("fx");
+    }
+    tip(b.isCapture ? "Equaliser, noise gate and compressor" : "Equaliser");
+
+    ImGui::SetNextWindowSize(ImVec2(430.0f * g_scale, 0));
+    if (ImGui::BeginPopup("fx")) {
+        drawEffects(b);
+        ImGui::EndPopup();
+    }
+
+    ImGui::EndChild();
+    ImGui::PopID();
+}
+
+// ---- panels ------------------------------------------------------------
+
+void drawDevicePicker(const char* label, const char* id,
+                      const std::vector<RenderDevice>& list,
+                      const std::string& current, bool isOutput, float width) {
+    ImGui::BeginGroup();
+    ImGui::PushFont(g_fontSmall);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(theme::kTextDim));
+    ImGui::TextUnformatted(label);
+    ImGui::PopStyleColor();
+    ImGui::PopFont();
+
+    ImGui::SetNextItemWidth(width);
+    const std::string shown = current.empty() ? std::string("(none)") : current;
+    if (ImGui::BeginCombo(id, shown.c_str())) {
+        for (const auto& d : list) {
+            // openmix's own devices are never offered: monitoring into our own
+            // output would feed the engine back into itself, and capturing our
+            // own microphone would loop it.
+            if (d.isOpenmix) continue;
+            const bool sel = (d.name == current);
+            if (ImGui::Selectable(d.name.c_str(), sel)) {
+                std::string err;
+                const bool ok = isOutput ? g_engine.setOutputDevice(d.name, err)
+                                         : g_engine.setMicDevice(d.name, err);
+                if (ok) { g_notice.clear(); saveSettings(); } else { g_notice = err; }
+            }
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::EndGroup();
+}
+
+void drawSettings() {
+    ImGui::PushFont(g_fontHead);
+    ImGui::TextUnformatted("Channels");
+    ImGui::PopFont();
+    ImGui::PushFont(g_fontSmall);
+    mix::textDim("Each one is a device applications can select.");
+    ImGui::PopFont();
     ImGui::Spacing();
 
     int removeAt = -1;
     for (size_t i = 0; i < g_channels.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        dl->AddRectFilled(ImVec2(p.x, p.y + 4.0f), ImVec2(p.x + 4.0f, p.y + 18.0f),
+                          theme::channelColor(i), 2.0f);
+        ImGui::Dummy(ImVec2(10.0f, 0));
+        ImGui::SameLine();
         ImGui::AlignTextToFramePadding();
         ImGui::Text("Openmix - %s", g_channels[i].c_str());
-        ImGui::SameLine(220.0f);
-        // One playback channel has to remain, or there is nothing to mix.
+        ImGui::SameLine(250.0f * g_scale);
         ImGui::BeginDisabled(g_channels.size() <= 1);
         if (ImGui::SmallButton("Remove")) removeAt = static_cast<int>(i);
         ImGui::EndDisabled();
@@ -506,8 +633,8 @@ void drawChannelEditor() {
     }
 
     ImGui::Spacing();
-    ImGui::SetNextItemWidth(200.0f);
-    const bool entered = ImGui::InputTextWithHint("##newch", "New channel name",
+    ImGui::SetNextItemWidth(180.0f * g_scale);
+    const bool entered = ImGui::InputTextWithHint("##newch", "Add a channel",
                                                   g_newChannel, sizeof(g_newChannel),
                                                   ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
@@ -528,17 +655,74 @@ void drawChannelEditor() {
             g_channels.push_back(name);
             g_newChannel[0] = 0;
             g_config.set("channels", joinChannels(g_channels));
-            g_config.save();
             restartEngine();
         }
     }
-
     if (removeAt >= 0) {
         g_channels.erase(g_channels.begin() + removeAt);
         g_config.set("channels", joinChannels(g_channels));
-        g_config.save();
         restartEngine();
     }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::PushFont(g_fontHead);
+    ImGui::TextUnformatted("General");
+    ImGui::PopFont();
+    ImGui::Spacing();
+
+    if (ImGui::Checkbox("Start with Windows", &g_autostart)) {
+        if (!setAutostart(g_autostart)) {
+            g_autostart = autostartEnabled();
+            g_notice = "Could not update the startup entry.";
+        }
+    }
+    tip("Launches openmix straight to the tray when you sign in");
+
+    if (!g_engine.namesApplied()) {
+        ImGui::Spacing();
+        ImGui::PushFont(g_fontSmall);
+        mix::textDim("Channels show as \"Speakers (Openmix - ...)\" until renamed.");
+        ImGui::PopFont();
+        if (ImGui::Button("Fix device names")) {
+            // Renaming an endpoint is an administrator write. It is needed
+            // once: the name persists.
+            wchar_t exe[MAX_PATH]{};
+            ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
+            std::wstring cli(exe);
+            const size_t slash = cli.find_last_of(L'\\');
+            if (slash != std::wstring::npos) cli = cli.substr(0, slash + 1);
+            cli += L"openmix-cli.exe";
+            ::ShellExecuteW(nullptr, L"runas", cli.c_str(), L"--fix-names", nullptr, SW_HIDE);
+        }
+        tip("Asks for administrator rights once; Windows remembers the names");
+    }
+
+    ImGui::Spacing();
+    ImGui::PushFont(g_fontSmall);
+    mix::textDim("Settings are stored in %%APPDATA%%\\openmix\\config.ini");
+    ImGui::PopFont();
+}
+
+void drawBanner(const char* text, ImU32 color) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float w = ImGui::GetContentRegionAvail().x;
+    const float h = 48.0f * g_scale;
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), theme::fade(color, 0.14f), 6.0f);
+    dl->AddRectFilled(p, ImVec2(p.x + 3.0f, p.y + h), color, 6.0f);
+
+    ImGui::Dummy(ImVec2(0, 7.0f * g_scale));
+    ImGui::Indent(14.0f * g_scale);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(color));
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + w - 28.0f * g_scale);
+    ImGui::TextUnformatted(text);
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+    ImGui::Unindent(14.0f * g_scale);
+    ImGui::Dummy(ImVec2(0, 6.0f * g_scale));
 }
 
 void drawUi() {
@@ -548,229 +732,77 @@ void drawUi() {
     ImGui::Begin("openmix", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-                 ImGuiWindowFlags_NoBringToFrontOnFocus);
+                 ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar);
 
-    if (!g_engine.running()) {
-        ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.35f, 1.0f), "Engine stopped");
-        if (!g_startError.empty()) ImGui::TextWrapped("%s", g_startError.c_str());
-        ImGui::Spacing();
-        if (ImGui::Button("Retry")) {
-            restartEngine();
-        }
-        ImGui::End();
-        return;
-    }
+    const float headerY = ImGui::GetCursorPosY();
+    const float rescanW = 62.0f * g_scale;
+    const float settingsW = 70.0f * g_scale;
+    const float pad = ImGui::GetStyle().WindowPadding.x;
+    const float gap = 16.0f * g_scale;
 
-    // Device pickers. openmix's own endpoints are filtered out of both lists:
-    // monitoring into our own output would feed the engine back into itself,
-    // and capturing our own microphone would loop it.
-    ImGui::PushItemWidth(340.0f);
+    // Share the space left over by the buttons equally, so a narrow window
+    // shortens both device names rather than one.
+    const float forPickers =
+        ImGui::GetWindowWidth() - pad * 2.0f - rescanW - settingsW - 6.0f * g_scale - gap * 2.0f;
+    const float pickerW =
+        (std::max)(130.0f * g_scale, (std::min)(forPickers * 0.5f, 260.0f * g_scale));
 
-    ImGui::TextDisabled("Headphones");
-    ImGui::SameLine(110.0f);
-    if (ImGui::BeginCombo("##out", g_engine.monitorDevice().c_str())) {
-        for (const auto& d : g_outDevices) {
-            if (d.isOpenmix) continue;
-            const bool sel = (d.name == g_engine.monitorDevice());
-            if (ImGui::Selectable(d.name.c_str(), sel)) {
-                std::string err;
-                if (!g_engine.setOutputDevice(d.name, err)) g_deviceError = err;
-                else { g_deviceError.clear(); saveSettings(); }
-            }
-            if (sel) ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("%.0f ms", g_engine.monitorBufferMs());
+    ImGui::SetCursorPos(ImVec2(pad, headerY));
+    drawDevicePicker("HEADPHONES", "##out", g_outDevices,
+                     g_engine.monitorDevice(), true, pickerW);
 
-    ImGui::TextDisabled("Microphone");
-    ImGui::SameLine(110.0f);
-    const std::string micLabel =
-        g_engine.micDevice().empty() ? std::string("(none)") : g_engine.micDevice();
-    if (ImGui::BeginCombo("##mic", micLabel.c_str())) {
-        for (const auto& d : g_micDevices) {
-            if (d.isOpenmix) continue;
-            const bool sel = (d.name == g_engine.micDevice());
-            if (ImGui::Selectable(d.name.c_str(), sel)) {
-                std::string err;
-                if (!g_engine.setMicDevice(d.name, err)) g_deviceError = err;
-                else { g_deviceError.clear(); saveSettings(); }
-            }
-            if (sel) ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Rescan")) {
+    ImGui::SetCursorPos(ImVec2(pad + pickerW + gap, headerY));
+    drawDevicePicker("MICROPHONE", "##mic", g_micDevices,
+                     g_engine.micDevice(), false, pickerW);
+    // Line the buttons up with the combo boxes rather than with their labels.
+    ImGui::SetCursorPosY(headerY + ImGui::GetTextLineHeight() + 6.0f * g_scale);
+    ImGui::SetCursorPosX(ImGui::GetWindowWidth() - pad - settingsW - 6.0f * g_scale - rescanW);
+    if (ImGui::Button("Rescan", ImVec2(rescanW, 0))) {
         g_outDevices = listRenderDevices();
         g_micDevices = listCaptureDevices();
     }
-
-    ImGui::PopItemWidth();
-
-    if (!g_deviceError.empty()) {
-        ImGui::TextColored(ImVec4(0.9f, 0.45f, 0.4f, 1.0f), "%s", g_deviceError.c_str());
-    } else if (g_engine.micDevice().empty() && !g_engine.micError().empty()) {
-        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.3f, 1.0f), "%s", g_engine.micError().c_str());
+    tip("Look for audio devices again");
+    ImGui::SameLine(0.0f, 6.0f * g_scale);
+    if (ImGui::Button(g_showSettings ? "Mixer" : "Settings", ImVec2(settingsW, 0))) {
+        g_showSettings = !g_showSettings;
     }
 
+    ImGui::Dummy(ImVec2(0, 4.0f * g_scale));
+    ImGui::Separator();
+    ImGui::Dummy(ImVec2(0, 4.0f * g_scale));
+
+    // Problems worth interrupting for.
     if (g_engine.usbipMissing()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.5f, 0.42f, 1.0f));
-        ImGui::TextWrapped(
-            "usbip-win2 is not installed, so no devices can be created. "
-            "openmix publishes its channels as virtual USB audio devices and "
-            "needs that driver to attach them.");
-        ImGui::PopStyleColor();
-        ImGui::TextDisabled("Install release v.0.9.7.7 from "
-                            "github.com/vadimgrn/usbip-win2, then restart openmix.");
-        ImGui::Spacing();
+        drawBanner("usbip-win2 is not installed, so no channels can be created. "
+                   "Install v.0.9.7.7 from github.com/vadimgrn/usbip-win2, then "
+                   "restart openmix.", theme::kMeterHot);
+    } else if (!g_engine.running()) {
+        drawBanner(g_startError.empty() ? "The audio engine is not running."
+                                        : g_startError.c_str(), theme::kMeterHot);
+        if (ImGui::Button("Retry")) restartEngine();
     } else if (g_engine.devicesMissing()) {
-        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.3f, 1.0f),
-                           "Some channels did not attach. Check that usbip-win2 is working, "
-                           "or use 'usbip port' to see what is connected.");
-        ImGui::Spacing();
+        drawBanner("Some channels did not connect. Check that usbip-win2 is working.",
+                   theme::kMeterWarn);
     }
+    if (!g_notice.empty()) drawBanner(g_notice.c_str(), theme::kMeterWarn);
 
-    if (!g_engine.namesApplied()) {
-        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.3f, 1.0f),
-                           "Channels are showing as \"Speakers (Openmix - ...)\".");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Fix names")) {
-            // Renaming an endpoint is an administrator write, so this has to
-            // elevate. It is needed once: the name persists.
-            wchar_t exe[MAX_PATH]{};
-            ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
-            std::wstring cli(exe);
-            const size_t slash = cli.find_last_of(L'\\');
-            if (slash != std::wstring::npos) cli = cli.substr(0, slash + 1);
-            cli += L"openmix-cli.exe";
-            ::ShellExecuteW(nullptr, L"runas", cli.c_str(), L"--fix-names",
-                            nullptr, SW_HIDE);
-        }
-    }
+    if (g_showSettings) {
+        ImGui::BeginChild("settings", ImVec2(0, 0), false);
+        drawSettings();
+        ImGui::EndChild();
+    } else if (g_engine.running()) {
+        const float height = ImGui::GetContentRegionAvail().y - 4.0f * g_scale;
+        auto& buses = g_engine.buses();
+        const auto& eps = g_engine.endpoints();
 
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    auto& buses = g_engine.buses();
-    const auto& eps = g_engine.endpoints();
-
-    if (ImGui::BeginTable("buses", 6,
-                          ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
-        ImGui::TableSetupColumn("Channel", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-        ImGui::TableSetupColumn("Level", ImGuiTableColumnFlags_WidthFixed, 120.0f);
-        ImGui::TableSetupColumn("Headphones", ImGuiTableColumnFlags_WidthFixed, 175.0f);
-        ImGui::TableSetupColumn("Stream / to apps", ImGuiTableColumnFlags_WidthFixed, 175.0f);
-        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 76.0f);
-        ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableHeadersRow();
-
+        ImGui::BeginChild("strips", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
         for (size_t i = 0; i < buses.size(); ++i) {
-            Bus& b = buses[i];
-            ImGui::TableNextRow();
-            ImGui::PushID(static_cast<int>(i));
-
-            ImGui::TableSetColumnIndex(0);
-            ImGui::AlignTextToFramePadding();
-            ImGui::Text("%s", b.name.c_str());
-            if (b.isCapture) {
-                ImGui::SameLine();
-                ImGui::TextDisabled("in");
-            }
-
-            ImGui::TableSetColumnIndex(1);
-            ImGui::AlignTextToFramePadding();
-            if (g_meters.size() < buses.size()) g_meters.resize(buses.size());
-            drawMeter(g_meters[i], b.ring.takePeak(), ImGui::GetIO().DeltaTime, 110.0f);
-
-            // Headphone level: what you hear.
-            ImGui::TableSetColumnIndex(2);
-            float db = dbFromGain(b.gain);
-            ImGui::SetNextItemWidth(165.0f);
-            if (ImGui::SliderFloat("##vol", &db, -60.0f, 12.0f, "%.1f dB")) {
-                b.gain = gainFromDb(db);
-            }
-            if (ImGui::IsItemDeactivatedAfterEdit()) saveSettings();
-
-            // Stream level: what OBS records, independently.
-            // For a playback channel this is what the stream hears; for the
-            // microphone it is what applications hear. Same control, and in
-            // both cases it is independent of the headphone fader.
-            ImGui::TableSetColumnIndex(3);
-            {
-                float sdb = dbFromGain(b.streamGain);
-                ImGui::SetNextItemWidth(165.0f);
-                if (ImGui::SliderFloat("##stream", &sdb, -60.0f, 12.0f, "%.1f dB")) {
-                    b.streamGain = gainFromDb(sdb);
-                }
-                if (ImGui::IsItemDeactivatedAfterEdit()) saveSettings();
-                if (ImGui::BeginPopupContextItem("##streamctx")) {
-                    if (ImGui::MenuItem(b.streamMuted ? "Unmute" : "Mute")) {
-                        b.streamMuted = !b.streamMuted;
-                        saveSettings();
-                    }
-                    ImGui::EndPopup();
-                }
-            }
-
-            ImGui::TableSetColumnIndex(4);
-            bool muted = b.muted;
-            if (muted) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.25f, 0.22f, 1.0f));
-            if (ImGui::Button(muted ? "M" : "m", ImVec2(36, 0))) {
-                b.muted = !muted;
-                saveSettings();
-            }
-            ImGui::SameLine(0.0f, 4.0f);
-            const bool dspOn = b.eq.enabled || b.mic.gate.enabled || b.mic.comp.enabled;
-            if (dspOn) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22f, 0.45f, 0.50f, 1.0f));
-            const bool anyDsp = b.eq.enabled || b.mic.gate.enabled || b.mic.comp.enabled;
-            if (ImGui::Button(b.isCapture ? "FX" : "EQ", ImVec2(30, 0))) ImGui::OpenPopup("eq");
-            (void)anyDsp;
-            if (dspOn) ImGui::PopStyleColor();
-            drawEqPopup(b);
-            if (muted) ImGui::PopStyleColor();
-
-            ImGui::TableSetColumnIndex(5);
-            ImGui::AlignTextToFramePadding();
+            if (i) ImGui::SameLine(0.0f, 8.0f * g_scale);
             const bool attached = i < eps.size() && eps[i]->attached.load();
-            const double r = g_engine.rate(i);
-            const double backlogMs = 1000.0 * static_cast<double>(b.ring.readable()) /
-                                     static_cast<double>(kChannels * kSampleRate);
-            if (!attached) {
-                ImGui::TextColored(ImVec4(0.9f, 0.45f, 0.4f, 1.0f), "not connected");
-            } else if (r > 1000.0) {
-                // Backlog is latency. Flag it when it climbs past a sane budget.
-                if (backlogMs > 60.0) {
-                    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.3f, 1.0f),
-                                       "%.1f kHz  %.0f ms", r / 1000.0, backlogMs);
-                } else {
-                    ImGui::TextDisabled("%.1f kHz  %.0f ms", r / 1000.0, backlogMs);
-                }
-            } else {
-                ImGui::TextDisabled("idle");
-            }
-
-            ImGui::PopID();
+            drawStrip(i, buses[i], attached, static_cast<float>(g_engine.rate(i)), height);
         }
-        ImGui::EndTable();
+        ImGui::EndChild();
     }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-
-    drawChannelEditor();
-    ImGui::Spacing();
-
-    if (ImGui::Checkbox("Start with Windows", &g_autostart)) {
-        if (!setAutostart(g_autostart)) {
-            g_autostart = autostartEnabled();   // registry refused; show the truth
-            g_deviceError = "Could not update the startup entry.";
-        }
-    }
-
-    ImGui::TextDisabled("Point apps at the Openmix devices in Windows sound settings.");
-    ImGui::TextDisabled("Closing this window keeps openmix running in the tray.");
 
     ImGui::End();
 }
@@ -778,23 +810,74 @@ void drawUi() {
 void applyStyle() {
     ImGuiStyle& s = ImGui::GetStyle();
     s.WindowRounding = 0.0f;
-    s.FrameRounding = 3.0f;
-    s.GrabRounding = 3.0f;
-    s.CellPadding = ImVec2(6, 5);
-    s.FramePadding = ImVec2(7, 4);
-    s.ItemSpacing = ImVec2(8, 7);
+    s.ChildRounding = 8.0f;
+    s.FrameRounding = 5.0f;
+    s.GrabRounding = 4.0f;
+    s.PopupRounding = 8.0f;
+    s.ScrollbarRounding = 6.0f;
+    s.WindowPadding = ImVec2(16, 12);
+    s.FramePadding = ImVec2(10, 6);
+    s.ItemSpacing = ImVec2(8, 8);
+    s.ItemInnerSpacing = ImVec2(6, 5);
+    s.WindowBorderSize = 0.0f;
+    s.ChildBorderSize = 0.0f;
+    s.FrameBorderSize = 0.0f;
+    s.PopupBorderSize = 0.0f;
+    s.ScrollbarSize = 10.0f;
+    s.ScaleAllSizes(g_scale);
 
     ImVec4* c = s.Colors;
-    c[ImGuiCol_WindowBg]      = ImVec4(0.09f, 0.10f, 0.11f, 1.00f);
-    c[ImGuiCol_FrameBg]       = ImVec4(0.16f, 0.17f, 0.19f, 1.00f);
-    c[ImGuiCol_FrameBgHovered]= ImVec4(0.22f, 0.23f, 0.26f, 1.00f);
-    c[ImGuiCol_SliderGrab]    = ImVec4(0.35f, 0.65f, 0.72f, 1.00f);
-    c[ImGuiCol_SliderGrabActive] = ImVec4(0.45f, 0.78f, 0.85f, 1.00f);
-    c[ImGuiCol_Button]        = ImVec4(0.20f, 0.21f, 0.24f, 1.00f);
-    c[ImGuiCol_ButtonHovered] = ImVec4(0.27f, 0.29f, 0.32f, 1.00f);
-    c[ImGuiCol_Header]        = ImVec4(0.18f, 0.19f, 0.22f, 1.00f);
-    c[ImGuiCol_TableHeaderBg] = ImVec4(0.13f, 0.14f, 0.16f, 1.00f);
-    c[ImGuiCol_TableRowBgAlt] = ImVec4(0.11f, 0.12f, 0.13f, 1.00f);
+    c[ImGuiCol_WindowBg]         = theme::toVec(theme::kBg);
+    c[ImGuiCol_ChildBg]          = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_PopupBg]          = theme::toVec(theme::kPanel);
+    c[ImGuiCol_Text]             = theme::toVec(theme::kText);
+    c[ImGuiCol_TextDisabled]     = theme::toVec(theme::kTextFaint);
+    c[ImGuiCol_Border]           = theme::toVec(theme::kLine);
+    c[ImGuiCol_FrameBg]          = theme::toVec(theme::kPanelHi);
+    c[ImGuiCol_FrameBgHovered]   = theme::toVec(theme::mix(theme::kPanelHi, theme::kAccent, 0.18f));
+    c[ImGuiCol_FrameBgActive]    = theme::toVec(theme::mix(theme::kPanelHi, theme::kAccent, 0.3f));
+    c[ImGuiCol_Button]           = theme::toVec(theme::kPanelHi);
+    c[ImGuiCol_ButtonHovered]    = theme::toVec(theme::mix(theme::kPanelHi, theme::kAccent, 0.25f));
+    c[ImGuiCol_ButtonActive]     = theme::toVec(theme::mix(theme::kPanelHi, theme::kAccent, 0.4f));
+    c[ImGuiCol_Header]           = theme::toVec(theme::kPanelHi);
+    c[ImGuiCol_HeaderHovered]    = theme::toVec(theme::mix(theme::kPanelHi, theme::kAccent, 0.25f));
+    c[ImGuiCol_HeaderActive]     = theme::toVec(theme::mix(theme::kPanelHi, theme::kAccent, 0.35f));
+    c[ImGuiCol_SliderGrab]       = theme::toVec(theme::kAccent);
+    c[ImGuiCol_SliderGrabActive] = theme::toVec(theme::mix(theme::kAccent, theme::kText, 0.3f));
+    c[ImGuiCol_CheckMark]        = theme::toVec(theme::kAccent);
+    c[ImGuiCol_Separator]        = theme::toVec(theme::kLine);
+    c[ImGuiCol_ScrollbarBg]      = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_ScrollbarGrab]    = theme::toVec(theme::kPanelHi);
+    c[ImGuiCol_TableHeaderBg]    = theme::toVec(theme::kPanel);
+    c[ImGuiCol_TableRowBgAlt]    = ImVec4(1, 1, 1, 0.02f);
+}
+
+// The stock ImGui font is a bitmap face made for debug overlays, and nothing
+// else makes a window look more like a developer tool.
+void loadFonts() {
+    ImGuiIO& io = ImGui::GetIO();
+    ImFontConfig cfg;
+    cfg.OversampleH = 2;
+    cfg.OversampleV = 2;
+    cfg.PixelSnapH = true;
+
+    const char* body = "C:\\Windows\\Fonts\\segoeui.ttf";
+    const char* semi = "C:\\Windows\\Fonts\\seguisb.ttf";
+    const char* bold = "C:\\Windows\\Fonts\\segoeuib.ttf";
+
+    g_fontBody = io.Fonts->AddFontFromFileTTF(body, 16.0f * g_scale, &cfg);
+    if (!g_fontBody) {
+        // A system without Segoe UI still gets a working window.
+        g_fontBody = io.Fonts->AddFontDefault();
+        g_fontHead = g_fontBody;
+        g_fontSmall = g_fontBody;
+        return;
+    }
+    g_fontHead = io.Fonts->AddFontFromFileTTF(semi, 16.0f * g_scale, &cfg);
+    if (!g_fontHead) g_fontHead = io.Fonts->AddFontFromFileTTF(bold, 16.0f * g_scale, &cfg);
+    if (!g_fontHead) g_fontHead = g_fontBody;
+    g_fontSmall = io.Fonts->AddFontFromFileTTF(body, 12.5f * g_scale, &cfg);
+    if (!g_fontSmall) g_fontSmall = g_fontBody;
 }
 
 }  // namespace
@@ -812,8 +895,12 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
         return 0;
     }
 
+    ::SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     ::timeBeginPeriod(1);   // the USB pacer sleeps in ~1 ms steps
+
+    g_scale = static_cast<float>(::GetDpiForSystem()) / 96.0f;
+    if (g_scale < 1.0f) g_scale = 1.0f;
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -827,7 +914,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     ::RegisterClassExW(&wc);
 
     g_hwnd = ::CreateWindowW(wc.lpszClassName, L"openmix", WS_OVERLAPPEDWINDOW,
-                             CW_USEDEFAULT, CW_USEDEFAULT, 900, 440,
+                             CW_USEDEFAULT, CW_USEDEFAULT,
+                             static_cast<int>(700 * g_scale),
+                             static_cast<int>(540 * g_scale),
                              nullptr, nullptr, hInst, nullptr);
     if (!g_hwnd) return 1;
 
@@ -838,7 +927,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
         return 1;
     }
 
-    // Dark title bar to match the window contents.
     BOOL dark = TRUE;
     ::DwmSetWindowAttribute(g_hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
 
@@ -856,6 +944,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::GetIO().IniFilename = nullptr;   // no imgui.ini beside the exe
+    loadFonts();
     applyStyle();
     ImGui_ImplWin32_Init(g_hwnd);
     ImGui_ImplDX11_Init(g_device, g_context);
@@ -874,10 +963,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     cfg.playbackBuses = g_channels;
     cfg.outMatch = g_config.get("output");
     cfg.micMatch = g_config.get("mic");
-    if (g_engine.start(cfg, g_startError)) {
-        applySettings();
-    }
-    // Otherwise the window stays up so the user can read why and retry.
+    if (g_engine.start(cfg, g_startError)) applySettings();
 
     DWORD lastRateSample = ::GetTickCount();
     bool done = false;
@@ -891,14 +977,15 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
         }
         if (done) break;
 
+        const DWORD now = ::GetTickCount();
+        if (now - lastRateSample >= 1000) {
+            g_engine.sampleRates();
+            lastRateSample = now;
+        }
+
         // Parked in the tray: stop rendering entirely, but keep audio running.
         if (g_inTray) {
             ::Sleep(120);
-            const DWORD now = ::GetTickCount();
-            if (now - lastRateSample >= 1000) {
-                g_engine.sampleRates();
-                lastRateSample = now;
-            }
             continue;
         }
 
@@ -908,19 +995,16 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
         }
         g_occluded = false;
 
-        const DWORD now = ::GetTickCount();
-        if (now - lastRateSample >= 1000) {
-            g_engine.sampleRates();
-            lastRateSample = now;
-        }
-
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
+        ImGui::PushFont(g_fontBody);
         drawUi();
+        ImGui::PopFont();
         ImGui::Render();
 
-        const float clear[4] = { 0.09f, 0.10f, 0.11f, 1.0f };
+        const ImVec4 bg = theme::toVec(theme::kBg);
+        const float clear[4] = { bg.x, bg.y, bg.z, 1.0f };
         g_context->OMSetRenderTargets(1, &g_rtv, nullptr);
         g_context->ClearRenderTargetView(g_rtv, clear);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
