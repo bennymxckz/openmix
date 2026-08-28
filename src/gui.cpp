@@ -32,6 +32,7 @@ namespace {
 constexpr UINT WM_OPENMIX_TRAY = WM_APP + 1;
 constexpr UINT ID_TRAY_SHOW = 1001;
 constexpr UINT ID_TRAY_QUIT = 1002;
+constexpr UINT ID_TRAY_MICMUTE = 1003;
 // Muting the microphone is the one thing worth reaching for without
 // finding the window first.
 constexpr int ID_HOTKEY_MIC = 1;
@@ -150,12 +151,21 @@ void showTrayMenu(HWND hwnd) {
     ::GetCursorPos(&pt);
     HMENU menu = ::CreatePopupMenu();
     ::AppendMenuW(menu, MF_STRING, ID_TRAY_SHOW, g_inTray ? L"Show mixer" : L"Hide mixer");
+
+    for (const auto& b : g_engine.buses()) {
+        if (!b.isCapture) continue;
+        ::AppendMenuW(menu, MF_STRING | (b.streamMuted ? MF_CHECKED : 0),
+                      ID_TRAY_MICMUTE, L"Mute microphone");
+        break;
+    }
     ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(menu, MF_STRING, ID_TRAY_QUIT, L"Quit openmix");
     ::SetForegroundWindow(hwnd);   // so the menu dismisses on an outside click
     ::TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
     ::DestroyMenu(menu);
 }
+
+void saveWindowPlacement();
 
 LRESULT WINAPI wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp)) return true;
@@ -179,6 +189,12 @@ LRESULT WINAPI wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
+        case WM_EXITSIZEMOVE:
+            // Saved when the move or resize finishes rather than only at exit,
+            // so a crash or a force-quit does not lose it.
+            saveWindowPlacement();
+            return 0;
+
         case WM_SYSCOMMAND:
             if ((wp & 0xfff0) == SC_KEYMENU) return 0;
             break;
@@ -198,6 +214,14 @@ LRESULT WINAPI wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_COMMAND:
             if (LOWORD(wp) == ID_TRAY_SHOW) {
                 if (g_inTray) restoreFromTray(hwnd); else hideToTray(hwnd);
+                return 0;
+            }
+            if (LOWORD(wp) == ID_TRAY_MICMUTE) {
+                for (auto& b : g_engine.buses()) {
+                    if (!b.isCapture) continue;
+                    b.streamMuted = !b.streamMuted;
+                    break;
+                }
                 return 0;
             }
             if (LOWORD(wp) == ID_TRAY_QUIT) { ::PostQuitMessage(0); return 0; }
@@ -337,6 +361,53 @@ void refreshChannelApps() {
     }
 }
 
+// Where the user put the window is a setting like any other.
+void saveWindowPlacement() {
+    if (!g_hwnd) return;
+    WINDOWPLACEMENT wp{};
+    wp.length = sizeof(wp);
+    if (!::GetWindowPlacement(g_hwnd, &wp)) return;
+    const RECT& r = wp.rcNormalPosition;
+    g_config.set("window", std::to_string(r.left) + "," + std::to_string(r.top) + "," +
+                           std::to_string(r.right - r.left) + "," +
+                           std::to_string(r.bottom - r.top));
+    g_config.save();
+}
+
+void restoreWindowPlacement() {
+    const std::string v = g_config.get("window");
+    int x = 0, y = 0, w = 0, h = 0;
+    if (std::sscanf(v.c_str(), "%d,%d,%d,%d", &x, &y, &w, &h) != 4) return;
+    if (w < 400 || h < 300) return;
+
+    // A monitor that has since been unplugged would put the window somewhere
+    // unreachable, so only restore a position that is still on a screen.
+    const RECT want{ x, y, x + w, y + h };
+    if (!::MonitorFromRect(&want, MONITOR_DEFAULTTONULL)) return;
+    ::SetWindowPos(g_hwnd, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// The tray icon is all you can see while hidden, so its tooltip carries the
+// state that matters.
+void updateTrayTip() {
+    bool micMuted = false;
+    bool haveMic = false;
+    for (const auto& b : g_engine.buses()) {
+        if (!b.isCapture) continue;
+        haveMic = true;
+        micMuted = b.streamMuted;
+        break;
+    }
+    const wchar_t* text = !g_engine.running() ? L"openmix - not running"
+                        : (haveMic && micMuted) ? L"openmix - microphone muted"
+                                                : L"openmix";
+    if (::wcscmp(g_tray.szTip, text) == 0) return;
+    ::wcscpy_s(g_tray.szTip, text);
+    g_tray.uFlags = NIF_TIP;
+    ::Shell_NotifyIconW(NIM_MODIFY, &g_tray);
+    g_tray.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+}
+
 void setMicHotkey(bool on) {
     ::UnregisterHotKey(g_hwnd, ID_HOTKEY_MIC);
     g_hotkeyFailed = false;
@@ -354,6 +425,7 @@ void setMicHotkey(bool on) {
 }
 
 void restartEngine() {
+    saveWindowPlacement();
     saveSettings();
     g_engine.stop();
     EngineConfig cfg;
@@ -1027,6 +1099,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
 
     // Launched by the autostart entry: go straight to the tray rather than
     // throwing a window in the user's face at every sign-in.
+    g_config.load();
+    restoreWindowPlacement();
+
     const bool startHidden = ::wcsstr(::GetCommandLineW(), L"--tray") != nullptr;
     if (startHidden) {
         g_inTray = true;
@@ -1047,7 +1122,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     g_outDevices = listRenderDevices();
     g_micDevices = listCaptureDevices();
 
-    g_config.load();
     g_autostart = autostartEnabled();
     if (g_config.getBool("micHotkey", false)) setMicHotkey(true);
     {
@@ -1085,6 +1159,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
             refreshChannelApps();
             lastAppScan = now;
         }
+        updateTrayTip();
 
         // Parked in the tray: stop rendering entirely, but keep audio running.
         if (g_inTray) {
