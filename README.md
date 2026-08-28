@@ -104,22 +104,34 @@ If old entries have accumulated from earlier versions, clear them with
 
 ## Features
 
+**Mixing**
+
 - Four channels by default, and the set is editable — Sonar's are fixed.
   Each channel becomes its own pair of Windows devices.
-- Independent **headphone** and **stream** levels per channel, plus mute
-  and solo. Solo affects monitoring only, never the stream.
-- Per-channel EQ: high-pass and three parametric bands.
+- Independent **headphone** and **stream** levels per channel, plus mute and
+  solo. Solo affects monitoring only, never the stream.
+- Level meters on a dB scale with peak hold and a latching clip indicator.
+- Faders take the scroll wheel (1 dB a notch, a fifth of that with Ctrl) and
+  reset to unity on double-click.
+
+**Processing**
+
+- Per-channel EQ: high-pass and three parametric bands, with a response curve
+  drawn from the coefficients actually in use.
 - Microphone noise gate and compressor, applied on the way in so the virtual
   microphone and your own monitoring agree.
-- Microphone self-monitoring, off by default.
-- Settings persist to `%APPDATA%\openmix\config.ini` as plain text, written
-  when they change rather than only at exit.
-- Optional start with Windows, straight to the tray.
-- Optional global Ctrl+Alt+M to mute the microphone from anywhere.
+- Microphone self-monitoring, silent by default.
+
+**Living with it**
+
 - Each strip names the applications playing to it, so routing can be
   confirmed rather than assumed. A channel with nothing on it says so, and
   clicking it opens the Windows page where applications are assigned.
-- The window remembers where you put it.
+- Optional global Ctrl+Alt+M to mute the microphone from anywhere, with the
+  state visible from the tray.
+- Optional start with Windows, straight to the tray.
+- Settings and window position persist to `%APPDATA%\openmix\config.ini` as
+  plain text, written when they change rather than only at exit.
 
 ## Testing
 
