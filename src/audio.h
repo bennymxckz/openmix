@@ -114,6 +114,7 @@ int runSelfTest(const std::string& channel, int seconds);
 
 // Offline filter checks: no devices, no audio hardware. Returns 0 on pass.
 int runDspTest();
+
 int runDynamicsTest();
 
 // Pulls audio from a real input device into a ring, which the USB capture
