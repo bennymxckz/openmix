@@ -54,6 +54,9 @@ std::string g_notice;
 std::vector<RenderDevice> g_outDevices;
 std::vector<RenderDevice> g_micDevices;
 std::vector<mix::MeterState> g_meters;
+// What is playing on each channel, refreshed on a timer rather than every
+// frame: enumerating sessions is a COM round trip per device.
+std::vector<std::vector<std::string>> g_channelApps;
 std::vector<std::string> g_channels{"Game", "Chat", "Media"};
 char g_newChannel[32] = {};
 bool g_autostart = false;
@@ -298,6 +301,24 @@ void applySettings() {
     }
 }
 
+// Match each channel to its Windows endpoint and ask what is playing on it.
+void refreshChannelApps() {
+    const auto& buses = g_engine.buses();
+    g_channelApps.assign(buses.size(), {});
+    if (!g_engine.running()) return;
+
+    const auto devices = listRenderDevices();
+    for (size_t i = 0; i < buses.size(); ++i) {
+        if (buses[i].isCapture) continue;   // a microphone has no players
+        const std::string want = "Openmix - " + buses[i].name;
+        for (const auto& d : devices) {
+            if (d.name.find(want) == std::string::npos) continue;
+            g_channelApps[i] = appsOnDevice(d.id);
+            break;
+        }
+    }
+}
+
 void restartEngine() {
     saveSettings();
     g_engine.stop();
@@ -474,12 +495,32 @@ void drawStrip(size_t index, Bus& b, bool attached, float rate, float height) {
         ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(theme::kMuted));
         ImGui::TextUnformatted("not connected");
         ImGui::PopStyleColor();
-    } else if (rate > 1000.0f) {
-        mix::textDim("%s", b.isCapture ? "microphone" : "receiving");
+    } else if (b.isCapture) {
+        mix::textDim("microphone");
+    } else if (index < g_channelApps.size() && !g_channelApps[index].empty()) {
+        // Naming what is actually playing beats "receiving": it is how you
+        // confirm Discord really is on Chat.
+        const auto& apps = g_channelApps[index];
+        std::string line = apps[0];
+        if (apps.size() > 1) line += " +" + std::to_string(apps.size() - 1);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(theme::kTextDim));
+        ImGui::TextUnformatted(line.c_str());
+        ImGui::PopStyleColor();
+        if (apps.size() > 1 && ImGui::IsItemHovered()) {
+            std::string all;
+            for (const auto& a : apps) all += (all.empty() ? "" : "\n") + a;
+            ImGui::SetTooltip("%s", all.c_str());
+        }
     } else {
         ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(theme::kTextFaint));
-        ImGui::TextUnformatted("idle");
+        ImGui::TextUnformatted(rate > 1000.0f ? "no apps" : "idle");
         ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::PushFont(g_fontSmall);
+            ImGui::SetTooltip("Point an application at \"Openmix - %s\" in\n"
+                              "Windows sound settings to route it here.", b.name.c_str());
+            ImGui::PopFont();
+        }
     }
     ImGui::PopFont();
 
@@ -966,6 +1007,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     if (g_engine.start(cfg, g_startError)) applySettings();
 
     DWORD lastRateSample = ::GetTickCount();
+    DWORD lastAppScan = 0;
     bool done = false;
 
     while (!done) {
@@ -981,6 +1023,12 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
         if (now - lastRateSample >= 1000) {
             g_engine.sampleRates();
             lastRateSample = now;
+        }
+        // Enumerating sessions is a COM round trip per device, so it happens
+        // far less often than the meters update, and never while hidden.
+        if (!g_inTray && now - lastAppScan >= 2000) {
+            refreshChannelApps();
+            lastAppScan = now;
         }
 
         // Parked in the tray: stop rendering entirely, but keep audio running.

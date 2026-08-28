@@ -107,6 +107,10 @@ std::vector<RenderDevice> listCaptureDevices();
 // Returns false when the property store refuses the write.
 bool renameEndpoint(const std::wstring& deviceId, const std::wstring& newName);
 
+// Names of the applications currently playing to one endpoint, so a channel
+// can show what is actually on it rather than what you hope is.
+std::vector<std::string> appsOnDevice(const std::wstring& deviceId);
+
 // Round-trip audio integrity check: play a tone into a channel's playback side
 // and record it from the same channel's capture side, then look for the gaps a
 // broken clock produces. Requires openmix to be running. Returns 0 on pass.

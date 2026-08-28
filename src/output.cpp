@@ -2,6 +2,8 @@
 
 #include <mmdeviceapi.h>
 #include <audioclient.h>
+#include <audiopolicy.h>
+#include <psapi.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <ksmedia.h>
 #include <avrt.h>
@@ -79,6 +81,76 @@ std::vector<RenderDevice> listRenderDevices() {
         rd.isOpenmix = contains(rd.name, "openmix");
         ::CoTaskMemFree(id);
         out.push_back(std::move(rd));
+    }
+    return out;
+}
+
+namespace {
+
+// "C:\Program Files\Discord\Discord.exe" -> "Discord"
+std::string prettyProcessName(DWORD pid) {
+    HANDLE h = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return {};
+    wchar_t path[MAX_PATH]{};
+    DWORD len = MAX_PATH;
+    const bool ok = ::QueryFullProcessImageNameW(h, 0, path, &len) != 0;
+    ::CloseHandle(h);
+    if (!ok) return {};
+
+    std::wstring w(path, len);
+    const size_t slash = w.find_last_of(L'\\');
+    if (slash != std::wstring::npos) w = w.substr(slash + 1);
+    if (w.size() > 4 && _wcsicmp(w.c_str() + w.size() - 4, L".exe") == 0) {
+        w = w.substr(0, w.size() - 4);
+    }
+    std::string out = narrow(w.c_str());
+    if (!out.empty()) out[0] = static_cast<char>(::toupper(static_cast<unsigned char>(out[0])));
+    return out;
+}
+
+}  // namespace
+
+std::vector<std::string> appsOnDevice(const std::wstring& deviceId) {
+    std::vector<std::string> out;
+    ComPtr<IMMDeviceEnumerator> devEnum;
+    if (FAILED(::CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                  IID_PPV_ARGS(&devEnum)))) {
+        return out;
+    }
+    ComPtr<IMMDevice> dev;
+    if (FAILED(devEnum->GetDevice(deviceId.c_str(), &dev))) return out;
+
+    ComPtr<IAudioSessionManager2> mgr;
+    if (FAILED(dev->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr,
+                             reinterpret_cast<void**>(&mgr)))) {
+        return out;
+    }
+    ComPtr<IAudioSessionEnumerator> sessions;
+    if (FAILED(mgr->GetSessionEnumerator(&sessions))) return out;
+
+    int count = 0;
+    sessions->GetCount(&count);
+    for (int i = 0; i < count; ++i) {
+        ComPtr<IAudioSessionControl> ctl;
+        if (FAILED(sessions->GetSession(i, &ctl))) continue;
+
+        // Expired sessions linger after an application closes; showing them
+        // would be worse than showing nothing.
+        AudioSessionState state = AudioSessionStateExpired;
+        if (FAILED(ctl->GetState(&state)) || state == AudioSessionStateExpired) continue;
+
+        ComPtr<IAudioSessionControl2> ctl2;
+        if (FAILED(ctl->QueryInterface(__uuidof(IAudioSessionControl2),
+                                       reinterpret_cast<void**>(&ctl2)))) {
+            continue;
+        }
+        if (ctl2->IsSystemSoundsSession() == S_OK) continue;
+
+        DWORD pid = 0;
+        if (FAILED(ctl2->GetProcessId(&pid)) || pid == 0) continue;
+        std::string name = prettyProcessName(pid);
+        if (name.empty()) continue;
+        if (std::find(out.begin(), out.end(), name) == out.end()) out.push_back(std::move(name));
     }
     return out;
 }
