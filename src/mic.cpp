@@ -98,6 +98,11 @@ void MicCapture::setEq(dsp::EqParams* eq, dsp::ChannelStrip* strip) {
     strip_ = strip;
 }
 
+void MicCapture::setDynamics(dsp::MicParams* mic, dsp::MicChain* chain) {
+    mic_ = mic;
+    micChain_ = chain;
+}
+
 bool MicCapture::start(FloatRing* sink, const std::string& deviceMatch, std::string& err) {
     sink_ = sink;
     deviceMatch_ = deviceMatch;
@@ -281,10 +286,17 @@ void MicCapture::run() {
                     sink_->write(silence.data(), samples);
                 } else {
                     const float* src = reinterpret_cast<const float*>(data);
-                    if (eq_ && strip_ && eq_->enabled) {
+                    const bool wantEq = eq_ && strip_ && eq_->enabled;
+                    const bool wantDyn = mic_ && micChain_ &&
+                                         (mic_->gate.enabled || mic_->comp.enabled);
+                    if (wantEq || wantDyn) {
                         if (work.size() < samples) work.resize(samples);
                         std::memcpy(work.data(), src, samples * sizeof(float));
-                        strip_->process(*eq_, work.data(), frames, kChannels);
+                        // EQ first: the gate and compressor should react to the
+                        // corrected signal, not to rumble the high-pass is
+                        // about to remove.
+                        if (wantEq) strip_->process(*eq_, work.data(), frames, kChannels);
+                        if (wantDyn) micChain_->process(*mic_, work.data(), frames, kChannels);
                         sink_->write(work.data(), samples);
                     } else {
                         sink_->write(src, samples);

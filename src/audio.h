@@ -6,6 +6,7 @@
 #include <memory>
 #include "ring.h"
 #include "dsp.h"
+#include "dynamics.h"
 
 // Canonical internal format. Everything inside the engine is float32 interleaved.
 constexpr unsigned kSampleRate = 48000;
@@ -80,6 +81,10 @@ struct Bus {
     dsp::EqParams eq;
     dsp::ChannelStrip strip;
 
+    // Gate and compressor, used on the microphone channel.
+    dsp::MicParams mic;
+    dsp::MicChain micChain;
+
     FloatRing ring;
     std::vector<std::unique_ptr<ProcessLoopbackCapture>> captures;
     std::vector<std::wstring> matchNames;  // lowercase image names
@@ -109,6 +114,7 @@ int runSelfTest(const std::string& channel, int seconds);
 
 // Offline filter checks: no devices, no audio hardware. Returns 0 on pass.
 int runDspTest();
+int runDynamicsTest();
 
 // Pulls audio from a real input device into a ring, which the USB capture
 // endpoint then serves to whichever application selected "openmix Mic".
@@ -118,6 +124,7 @@ public:
     // Optional processing applied on the way in, so everything downstream --
     // the virtual microphone and any monitoring -- hears the same thing.
     void setEq(dsp::EqParams* eq, dsp::ChannelStrip* strip);
+    void setDynamics(dsp::MicParams* mic, dsp::MicChain* chain);
     bool start(FloatRing* sink, const std::string& deviceMatch, std::string& err);
     void stop();
     const std::string& deviceName() const { return deviceName_; }
@@ -129,6 +136,8 @@ private:
     FloatRing* sink_ = nullptr;
     dsp::EqParams* eq_ = nullptr;
     dsp::ChannelStrip* strip_ = nullptr;
+    dsp::MicParams* mic_ = nullptr;
+    dsp::MicChain* micChain_ = nullptr;
     std::string deviceMatch_;
     std::string deviceName_;
     std::string startErr_;

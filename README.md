@@ -113,8 +113,16 @@ choices, per-channel volume and mute -- written whenever you change something
 rather than only at exit. "Start with Windows" registers a per-user HKCU Run
 entry that launches openmix straight to the tray.
 
-Not yet: per-bus EQ and microphone processing, an installer, and adaptive
-resampling
+Each channel has a high-pass and three parametric EQ bands. The microphone
+channel adds a noise gate and a compressor, applied on the way in so the
+virtual microphone and any monitoring agree.
+
+Two test modes verify this without hardware or listening:
+
+    build\openmix-cli.exe --dsptest      filter and dynamics response, offline
+    build\openmix-cli.exe --selftest     round trip through a live channel
+
+Not yet: an installer, and adaptive resampling
 to correct long-run clock drift between the USB packet clock and the render
 device. Expect an occasional glitch on multi-hour sessions until that lands.
 

@@ -8,6 +8,7 @@
 
 #include "audio.h"
 #include "dsp.h"
+#include "dynamics.h"
 
 #include <mmdeviceapi.h>
 #include <audioclient.h>
@@ -354,5 +355,83 @@ int runDspTest() {
     }
 
     std::printf("\n%s\n", ok ? "PASS - all DSP checks" : "FAIL");
+    return ok ? 0 : 1;
+}
+
+namespace {
+
+// Steady-state output level in dBFS for a sine of a given input level, after
+// the dynamics have had time to settle.
+double dynLevelDb(const dsp::MicParams& p, double inputDb, double freq = 440.0) {
+    dsp::MicChain chain;
+    chain.prepare(kSampleRate);
+
+    const size_t frames = 48000;                 // one second, plenty to settle
+    std::vector<float> buf(frames * kChannels);
+    const double amp = std::pow(10.0, inputDb / 20.0);
+    const double step = 2.0 * 3.14159265358979 * freq / kSampleRate;
+    for (size_t i = 0; i < frames; ++i) {
+        const float v = static_cast<float>(std::sin(step * static_cast<double>(i)) * amp);
+        for (unsigned c = 0; c < kChannels; ++c) buf[i * kChannels + c] = v;
+    }
+    chain.process(p, buf.data(), frames, kChannels);
+
+    double peak = 0.0;
+    for (size_t i = frames * 3 / 4; i < frames; ++i) {
+        peak = (std::max)(peak, std::fabs(static_cast<double>(buf[i * kChannels])));
+    }
+    return peak > 1e-9 ? 20.0 * std::log10(peak) : -120.0;
+}
+
+}  // namespace
+
+int runDynamicsTest() {
+    std::printf("Dynamics checks at %u Hz\n\n", kSampleRate);
+    bool ok = true;
+
+    {
+        dsp::MicParams p;
+        p.gate.enabled = true;
+        p.gate.thresholdDb = -45.0f;
+        p.gate.releaseMs = 50.0f;
+        p.gate.holdMs = 10.0f;
+        ok &= checkDb("gate closes on a -60 dB signal", dynLevelDb(p, -60.0), -120.0, 25.0);
+        ok &= checkDb("gate passes a -20 dB signal", dynLevelDb(p, -20.0), -20.0, 0.5);
+    }
+    {
+        dsp::MicParams p;
+        p.comp.enabled = true;
+        p.comp.thresholdDb = -18.0f;
+        p.comp.ratio = 4.0f;
+        p.comp.attackMs = 1.0f;
+        // 12 dB over a -18 dB threshold at 4:1 leaves 3 dB over, so -15 dBFS.
+        ok &= checkDb("compressor 4:1 turns -6 dB into -15 dB", dynLevelDb(p, -6.0), -15.0, 1.0);
+        ok &= checkDb("compressor leaves -30 dB below threshold alone",
+                      dynLevelDb(p, -30.0), -30.0, 0.5);
+    }
+    {
+        dsp::MicParams p;
+        p.comp.enabled = true;
+        p.comp.thresholdDb = -18.0f;
+        p.comp.ratio = 4.0f;
+        p.comp.attackMs = 1.0f;
+        p.comp.makeupDb = 6.0f;
+        ok &= checkDb("makeup gain lifts the compressed result", dynLevelDb(p, -6.0), -9.0, 1.0);
+    }
+    {
+        // Makeup must never push the virtual microphone into clipping.
+        dsp::MicParams p;
+        p.comp.enabled = true;
+        p.comp.thresholdDb = -30.0f;
+        p.comp.ratio = 2.0f;
+        p.comp.makeupDb = 24.0f;
+        const double out = dynLevelDb(p, -3.0);
+        const bool clipOk = out <= 0.05;
+        std::printf("  %-44s %+6.2f dBFS (must not exceed 0)  %s\n",
+                    "heavy makeup stays below full scale", out, clipOk ? "PASS" : "FAIL");
+        ok &= clipOk;
+    }
+
+    std::printf("\n%s\n", ok ? "PASS - all dynamics checks" : "FAIL");
     return ok ? 0 : 1;
 }

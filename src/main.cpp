@@ -258,7 +258,9 @@ int main(int argc, char** argv) {
     ::timeBeginPeriod(1);   // the USB pacer sleeps in ~1 ms steps
 
     if (dspTest) {
-        const int rc = runDspTest();
+        int rc = runDspTest();
+        std::printf("\n");
+        rc |= runDynamicsTest();
         ::CoUninitialize();
         return rc;
     }

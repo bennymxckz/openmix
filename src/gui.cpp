@@ -234,6 +234,19 @@ void saveSettings() {
         g_config.setBool(e + "on", b.eq.enabled);
         const dsp::Band* bands[4] = { &b.eq.hp, &b.eq.low, &b.eq.mid, &b.eq.high };
         const char* names[4] = { "hp", "low", "mid", "high" };
+        if (b.isCapture) {
+            const std::string m = "bus." + b.name + ".";
+            g_config.setBool(m + "gate.on", b.mic.gate.enabled);
+            g_config.setFloat(m + "gate.thresh", b.mic.gate.thresholdDb);
+            g_config.setFloat(m + "gate.hold", b.mic.gate.holdMs);
+            g_config.setFloat(m + "gate.release", b.mic.gate.releaseMs);
+            g_config.setBool(m + "comp.on", b.mic.comp.enabled);
+            g_config.setFloat(m + "comp.thresh", b.mic.comp.thresholdDb);
+            g_config.setFloat(m + "comp.ratio", b.mic.comp.ratio);
+            g_config.setFloat(m + "comp.attack", b.mic.comp.attackMs);
+            g_config.setFloat(m + "comp.release", b.mic.comp.releaseMs);
+            g_config.setFloat(m + "comp.makeup", b.mic.comp.makeupDb);
+        }
         for (int i = 0; i < 4; ++i) {
             g_config.setBool(e + names[i] + ".on", bands[i]->on);
             g_config.setFloat(e + names[i] + ".f", bands[i]->freq);
@@ -255,6 +268,19 @@ void applySettings() {
         b.eq.enabled = g_config.getBool(e + "on", false);
         dsp::Band* bands[4] = { &b.eq.hp, &b.eq.low, &b.eq.mid, &b.eq.high };
         const char* names[4] = { "hp", "low", "mid", "high" };
+        if (b.isCapture) {
+            const std::string m = "bus." + b.name + ".";
+            b.mic.gate.enabled     = g_config.getBool(m + "gate.on", false);
+            b.mic.gate.thresholdDb = g_config.getFloat(m + "gate.thresh", b.mic.gate.thresholdDb);
+            b.mic.gate.holdMs      = g_config.getFloat(m + "gate.hold", b.mic.gate.holdMs);
+            b.mic.gate.releaseMs   = g_config.getFloat(m + "gate.release", b.mic.gate.releaseMs);
+            b.mic.comp.enabled     = g_config.getBool(m + "comp.on", false);
+            b.mic.comp.thresholdDb = g_config.getFloat(m + "comp.thresh", b.mic.comp.thresholdDb);
+            b.mic.comp.ratio       = g_config.getFloat(m + "comp.ratio", b.mic.comp.ratio);
+            b.mic.comp.attackMs    = g_config.getFloat(m + "comp.attack", b.mic.comp.attackMs);
+            b.mic.comp.releaseMs   = g_config.getFloat(m + "comp.release", b.mic.comp.releaseMs);
+            b.mic.comp.makeupDb    = g_config.getFloat(m + "comp.makeup", b.mic.comp.makeupDb);
+        }
         for (int i = 0; i < 4; ++i) {
             bands[i]->on     = g_config.getBool(e + names[i] + ".on", bands[i]->on);
             bands[i]->freq   = g_config.getFloat(e + names[i] + ".f", bands[i]->freq);
@@ -315,6 +341,46 @@ void drawEqPopup(Bus& b) {
     changed |= drawBand("Mid", b.eq.mid, true);
     changed |= drawBand("High", b.eq.high, true);
     ImGui::EndDisabled();
+
+    if (b.isCapture) {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Text("Microphone dynamics");
+        ImGui::Spacing();
+
+        changed |= ImGui::Checkbox("Noise gate", &b.mic.gate.enabled);
+        ImGui::SameLine();
+        ImGui::TextDisabled("%.0f dB", b.micChain.gateReductionDb());
+        ImGui::BeginDisabled(!b.mic.gate.enabled);
+        ImGui::SetNextItemWidth(200.0f);
+        changed |= ImGui::SliderFloat("Threshold##g", &b.mic.gate.thresholdDb,
+                                      -80.0f, 0.0f, "%.0f dB");
+        ImGui::SetNextItemWidth(200.0f);
+        changed |= ImGui::SliderFloat("Hold##g", &b.mic.gate.holdMs, 0.0f, 500.0f, "%.0f ms");
+        ImGui::SetNextItemWidth(200.0f);
+        changed |= ImGui::SliderFloat("Release##g", &b.mic.gate.releaseMs,
+                                      10.0f, 1000.0f, "%.0f ms");
+        ImGui::EndDisabled();
+
+        ImGui::Spacing();
+        changed |= ImGui::Checkbox("Compressor", &b.mic.comp.enabled);
+        ImGui::SameLine();
+        ImGui::TextDisabled("%.1f dB", b.micChain.compReductionDb());
+        ImGui::BeginDisabled(!b.mic.comp.enabled);
+        ImGui::SetNextItemWidth(200.0f);
+        changed |= ImGui::SliderFloat("Threshold##c", &b.mic.comp.thresholdDb,
+                                      -48.0f, 0.0f, "%.0f dB");
+        ImGui::SetNextItemWidth(200.0f);
+        changed |= ImGui::SliderFloat("Ratio##c", &b.mic.comp.ratio, 1.0f, 12.0f, "%.1f : 1");
+        ImGui::SetNextItemWidth(200.0f);
+        changed |= ImGui::SliderFloat("Attack##c", &b.mic.comp.attackMs, 0.5f, 50.0f, "%.1f ms");
+        ImGui::SetNextItemWidth(200.0f);
+        changed |= ImGui::SliderFloat("Release##c", &b.mic.comp.releaseMs,
+                                      20.0f, 800.0f, "%.0f ms");
+        ImGui::SetNextItemWidth(200.0f);
+        changed |= ImGui::SliderFloat("Makeup##c", &b.mic.comp.makeupDb, 0.0f, 24.0f, "%+.1f dB");
+        ImGui::EndDisabled();
+    }
 
     if (changed) saveSettings();
     ImGui::EndPopup();
@@ -475,9 +541,12 @@ void drawUi() {
                 saveSettings();
             }
             ImGui::SameLine(0.0f, 4.0f);
-            if (b.eq.enabled) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22f, 0.45f, 0.50f, 1.0f));
-            if (ImGui::Button("EQ", ImVec2(30, 0))) ImGui::OpenPopup("eq");
-            if (b.eq.enabled) ImGui::PopStyleColor();
+            const bool dspOn = b.eq.enabled || b.mic.gate.enabled || b.mic.comp.enabled;
+            if (dspOn) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22f, 0.45f, 0.50f, 1.0f));
+            const bool anyDsp = b.eq.enabled || b.mic.gate.enabled || b.mic.comp.enabled;
+            if (ImGui::Button(b.isCapture ? "FX" : "EQ", ImVec2(30, 0))) ImGui::OpenPopup("eq");
+            (void)anyDsp;
+            if (dspOn) ImGui::PopStyleColor();
             drawEqPopup(b);
             if (muted) ImGui::PopStyleColor();
 

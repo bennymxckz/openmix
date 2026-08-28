@@ -65,6 +65,7 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
         b.ring.reset(kSampleRate / 2, kChannels);
         if (!b.isCapture) b.stream.reset(kSampleRate / 4, kChannels);
         b.strip.prepare(kSampleRate);
+        b.micChain.prepare(kSampleRate);
     }
 
     if (!out_.start(&buses_, cfg_.outMatch, err)) return false;
@@ -107,6 +108,7 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
             if (!b.isCapture) continue;
             std::string micErr;
             mic_.setEq(&b.eq, &b.strip);
+            mic_.setDynamics(&b.mic, &b.micChain);
             if (mic_.start(&b.ring, cfg_.micMatch, micErr)) {
                 micDeviceName_ = mic_.deviceName();
             } else {
@@ -187,6 +189,7 @@ bool Engine::setMicDevice(const std::string& match, std::string& err) {
         if (b.isCapture) {
             ring = &b.ring;
             mic_.setEq(&b.eq, &b.strip);
+            mic_.setDynamics(&b.mic, &b.micChain);
             break;
         }
     }
