@@ -761,23 +761,40 @@ void drawDevicePicker(const char* label, const char* id,
     ImGui::EndGroup();
 }
 
-void drawSettings() {
+// A titled card, so settings reads as the same product as the mixer rather
+// than as a form bolted to the side of it.
+void beginCard(const char* title, const char* subtitle = nullptr) {
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::toVec(theme::kPanel));
+    ImGui::BeginChild(title, ImVec2(0, 0),
+                      ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
     ImGui::PushFont(g_fontHead);
-    ImGui::TextUnformatted("Channels");
+    ImGui::TextUnformatted(title);
     ImGui::PopFont();
-    ImGui::PushFont(g_fontSmall);
-    mix::textDim("Each one is a device applications can select.");
-    ImGui::PopFont();
+    if (subtitle) {
+        ImGui::PushFont(g_fontSmall);
+        mix::textDim("%s", subtitle);
+        ImGui::PopFont();
+    }
     ImGui::Spacing();
+}
+
+void endCard() {
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::Dummy(ImVec2(0, 10.0f * g_scale));
+}
+
+void drawSettings() {
+    beginCard("Channels", "Each one becomes a device applications can select.");
 
     int removeAt = -1;
     for (size_t i = 0; i < g_channels.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        dl->AddRectFilled(ImVec2(p.x, p.y + 4.0f), ImVec2(p.x + 4.0f, p.y + 18.0f),
+        dl->AddRectFilled(ImVec2(p.x, p.y + 3.0f), ImVec2(p.x + 5.0f, p.y + 21.0f),
                           theme::channelColor(i), 2.0f);
-        ImGui::Dummy(ImVec2(10.0f, 0));
+        ImGui::Dummy(ImVec2(12.0f * g_scale, 0));
         ImGui::SameLine();
         ImGui::AlignTextToFramePadding();
         ImGui::Text("Openmix - %s", g_channels[i].c_str());
@@ -786,6 +803,26 @@ void drawSettings() {
         if (ImGui::SmallButton("Remove")) removeAt = static_cast<int>(i);
         ImGui::EndDisabled();
         ImGui::PopID();
+    }
+
+    // The microphone is a channel too, and leaving it out made settings
+    // account for one fewer strip than the mixer shows.
+    {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        dl->AddRectFilled(ImVec2(p.x, p.y + 3.0f), ImVec2(p.x + 5.0f, p.y + 21.0f),
+                          theme::channelColor(g_channels.size()), 2.0f);
+        ImGui::Dummy(ImVec2(12.0f * g_scale, 0));
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Openmix - Mic");
+        ImGui::SameLine(250.0f * g_scale);
+        ImGui::PushFont(g_fontSmall);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(theme::kTextFaint));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("always present");
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
     }
 
     ImGui::Spacing();
@@ -820,14 +857,8 @@ void drawSettings() {
         restartEngine();
     }
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    ImGui::PushFont(g_fontHead);
-    ImGui::TextUnformatted("General");
-    ImGui::PopFont();
-    ImGui::Spacing();
+    endCard();
+    beginCard("General");
 
     bool hk = g_micHotkey;
     if (ImGui::Checkbox("Mute microphone with Ctrl+Alt+M", &hk)) setMicHotkey(hk);
@@ -867,10 +898,20 @@ void drawSettings() {
         tip("Asks for administrator rights once; Windows remembers the names");
     }
 
-    ImGui::Spacing();
+    endCard();
+    beginCard("Settings file");
     ImGui::PushFont(g_fontSmall);
-    mix::textDim("Settings are stored in %%APPDATA%%\\openmix\\config.ini");
+    mix::textDim("%s", Config::path().c_str());
     ImGui::PopFont();
+    ImGui::Spacing();
+    if (ImGui::Button("Open folder")) {
+        std::string dir = Config::path();
+        const size_t slash = dir.find_last_of('\\');
+        if (slash != std::string::npos) dir = dir.substr(0, slash);
+        ::ShellExecuteA(nullptr, "open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+    tip("Plain text; safe to edit while openmix is closed");
+    endCard();
 }
 
 void drawBanner(const char* text, ImU32 color) {
