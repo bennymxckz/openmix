@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 
 namespace {
 
@@ -90,6 +91,11 @@ MicCapture::~MicCapture() { stop(); }
 DWORD WINAPI MicCapture::thunk(LPVOID self) {
     static_cast<MicCapture*>(self)->run();
     return 0;
+}
+
+void MicCapture::setEq(dsp::EqParams* eq, dsp::ChannelStrip* strip) {
+    eq_ = eq;
+    strip_ = strip;
 }
 
 bool MicCapture::start(FloatRing* sink, const std::string& deviceMatch, std::string& err) {
@@ -252,6 +258,7 @@ void MicCapture::run() {
 
     HANDLE waits[2] = { stopEvt_, bufEvt };
     std::vector<float> silence;
+    std::vector<float> work;
 
     for (;;) {
         const DWORD w = ::WaitForMultipleObjects(2, waits, FALSE, 500);
@@ -273,7 +280,15 @@ void MicCapture::run() {
                     if (silence.size() < samples) silence.assign(samples, 0.0f);
                     sink_->write(silence.data(), samples);
                 } else {
-                    sink_->write(reinterpret_cast<const float*>(data), samples);
+                    const float* src = reinterpret_cast<const float*>(data);
+                    if (eq_ && strip_ && eq_->enabled) {
+                        if (work.size() < samples) work.resize(samples);
+                        std::memcpy(work.data(), src, samples * sizeof(float));
+                        strip_->process(*eq_, work.data(), frames, kChannels);
+                        sink_->write(work.data(), samples);
+                    } else {
+                        sink_->write(src, samples);
+                    }
                 }
             }
             capture->ReleaseBuffer(frames);

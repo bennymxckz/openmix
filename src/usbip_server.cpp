@@ -10,6 +10,9 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <cfloat>
+#include <cfenv>
+#include <float.h>
 
 using namespace usbip;
 
@@ -344,6 +347,11 @@ bool UsbipServer::handleStreaming(SOCKET s, VirtualEndpoint& ep) {
 
     // Playback: audio arriving from the host.
     std::thread outWorker([&] {
+        // A filter tail decaying into denormals can cost orders of magnitude
+        // more CPU than normal arithmetic. Flush them to zero instead.
+        unsigned oldFp = 0;
+        ::_controlfp_s(&oldFp, _DN_FLUSH, _MCW_DN);
+
         Pacer pacer;
         std::vector<float> scratch;
         Job j;
@@ -365,6 +373,11 @@ bool UsbipServer::handleStreaming(SOCKET s, VirtualEndpoint& ep) {
                 for (size_t i = 0; i < samples; ++i) {
                     scratch[i] = (static_cast<float>(pcm[i]) / 32768.0f) * g;
                 }
+                if (ep.strip && ep.eq) {
+                    ep.strip->process(*ep.eq, scratch.data(),
+                                      samples / usbaudio::kChannels, usbaudio::kChannels);
+                }
+
                 if (ep.sink) ep.sink->write(scratch.data(), samples);
                 // Duplex: the capture side serves the same audio at its own level.
                 if (ep.streamTap) ep.streamTap->write(scratch.data(), samples);

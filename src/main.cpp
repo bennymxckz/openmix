@@ -180,6 +180,7 @@ int main(int argc, char** argv) {
     bool listDevices = false;
     bool fixNames_ = false;
     bool selfTest = false;
+    bool dspTest = false;
     std::string selfTestChannel = "Game";
     bool noMic = false;
     std::string outMatch;
@@ -194,6 +195,7 @@ int main(int argc, char** argv) {
         if (a == "--endpoints") { loopbackMode = false; continue; }
         if (a == "--list-devices") { listDevices = true; continue; }
         if (a == "--fix-names") { fixNames_ = true; continue; }
+        if (a == "--dsptest") { dspTest = true; continue; }
         if (a == "--selftest") {
             selfTest = true;
             if (i + 1 < argc && argv[i + 1][0] != 0x2D) selfTestChannel = argv[++i];
@@ -254,6 +256,12 @@ int main(int argc, char** argv) {
 
     ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     ::timeBeginPeriod(1);   // the USB pacer sleeps in ~1 ms steps
+
+    if (dspTest) {
+        const int rc = runDspTest();
+        ::CoUninitialize();
+        return rc;
+    }
 
     if (selfTest) {
         const int rc = runSelfTest(selfTestChannel, 5);

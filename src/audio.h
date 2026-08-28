@@ -5,6 +5,7 @@
 #include <vector>
 #include <memory>
 #include "ring.h"
+#include "dsp.h"
 
 // Canonical internal format. Everything inside the engine is float32 interleaved.
 constexpr unsigned kSampleRate = 48000;
@@ -74,6 +75,11 @@ struct Bus {
     bool streamMuted = false;
     FloatRing stream;
 
+    // EQ is a property of the channel, so it applies before the split and
+    // both the monitor mix and the stream hear the same thing.
+    dsp::EqParams eq;
+    dsp::ChannelStrip strip;
+
     FloatRing ring;
     std::vector<std::unique_ptr<ProcessLoopbackCapture>> captures;
     std::vector<std::wstring> matchNames;  // lowercase image names
@@ -101,11 +107,17 @@ bool renameEndpoint(const std::wstring& deviceId, const std::wstring& newName);
 // broken clock produces. Requires openmix to be running. Returns 0 on pass.
 int runSelfTest(const std::string& channel, int seconds);
 
+// Offline filter checks: no devices, no audio hardware. Returns 0 on pass.
+int runDspTest();
+
 // Pulls audio from a real input device into a ring, which the USB capture
 // endpoint then serves to whichever application selected "openmix Mic".
 class MicCapture {
 public:
     ~MicCapture();
+    // Optional processing applied on the way in, so everything downstream --
+    // the virtual microphone and any monitoring -- hears the same thing.
+    void setEq(dsp::EqParams* eq, dsp::ChannelStrip* strip);
     bool start(FloatRing* sink, const std::string& deviceMatch, std::string& err);
     void stop();
     const std::string& deviceName() const { return deviceName_; }
@@ -115,6 +127,8 @@ private:
     static DWORD WINAPI thunk(LPVOID self);
 
     FloatRing* sink_ = nullptr;
+    dsp::EqParams* eq_ = nullptr;
+    dsp::ChannelStrip* strip_ = nullptr;
     std::string deviceMatch_;
     std::string deviceName_;
     std::string startErr_;

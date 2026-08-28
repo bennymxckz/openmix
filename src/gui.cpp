@@ -229,6 +229,17 @@ void saveSettings() {
         g_config.setBool("bus." + b.name + ".mute", b.muted);
         g_config.setFloat("bus." + b.name + ".streamGain", b.streamGain);
         g_config.setBool("bus." + b.name + ".streamMute", b.streamMuted);
+
+        const std::string e = "bus." + b.name + ".eq.";
+        g_config.setBool(e + "on", b.eq.enabled);
+        const dsp::Band* bands[4] = { &b.eq.hp, &b.eq.low, &b.eq.mid, &b.eq.high };
+        const char* names[4] = { "hp", "low", "mid", "high" };
+        for (int i = 0; i < 4; ++i) {
+            g_config.setBool(e + names[i] + ".on", bands[i]->on);
+            g_config.setFloat(e + names[i] + ".f", bands[i]->freq);
+            g_config.setFloat(e + names[i] + ".g", bands[i]->gainDb);
+            g_config.setFloat(e + names[i] + ".q", bands[i]->q);
+        }
     }
     g_config.save();
 }
@@ -239,7 +250,74 @@ void applySettings() {
         b.muted       = g_config.getBool("bus." + b.name + ".mute", false);
         b.streamGain  = g_config.getFloat("bus." + b.name + ".streamGain", 1.0f);
         b.streamMuted = g_config.getBool("bus." + b.name + ".streamMute", false);
+
+        const std::string e = "bus." + b.name + ".eq.";
+        b.eq.enabled = g_config.getBool(e + "on", false);
+        dsp::Band* bands[4] = { &b.eq.hp, &b.eq.low, &b.eq.mid, &b.eq.high };
+        const char* names[4] = { "hp", "low", "mid", "high" };
+        for (int i = 0; i < 4; ++i) {
+            bands[i]->on     = g_config.getBool(e + names[i] + ".on", bands[i]->on);
+            bands[i]->freq   = g_config.getFloat(e + names[i] + ".f", bands[i]->freq);
+            bands[i]->gainDb = g_config.getFloat(e + names[i] + ".g", bands[i]->gainDb);
+            bands[i]->q      = g_config.getFloat(e + names[i] + ".q", bands[i]->q);
+        }
     }
+}
+
+// One EQ band: enable, frequency, gain and Q. Frequency is logarithmic
+// because hearing is, so a linear slider would waste most of its travel above
+// 10 kHz.
+bool drawBand(const char* label, dsp::Band& b, bool hasGain) {
+    bool changed = false;
+    ImGui::PushID(label);
+    changed |= ImGui::Checkbox("##on", &b.on);
+    ImGui::SameLine();
+    ImGui::TextUnformatted(label);
+    ImGui::SameLine(90.0f);
+
+    ImGui::BeginDisabled(!b.on);
+    ImGui::SetNextItemWidth(150.0f);
+    changed |= ImGui::SliderFloat("##f", &b.freq, 20.0f, 20000.0f, "%.0f Hz",
+                                  ImGuiSliderFlags_Logarithmic);
+    ImGui::SameLine();
+    if (hasGain) {
+        ImGui::SetNextItemWidth(130.0f);
+        changed |= ImGui::SliderFloat("##g", &b.gainDb, -18.0f, 18.0f, "%+.1f dB");
+        ImGui::SameLine();
+    }
+    ImGui::SetNextItemWidth(110.0f);
+    changed |= ImGui::SliderFloat("##q", &b.q, 0.2f, 8.0f, "Q %.2f");
+    ImGui::EndDisabled();
+
+    ImGui::PopID();
+    return changed;
+}
+
+void drawEqPopup(Bus& b) {
+    if (!ImGui::BeginPopup("eq")) return;
+
+    ImGui::Text("%s equaliser", b.name.c_str());
+    ImGui::Separator();
+
+    bool changed = ImGui::Checkbox("Enabled", &b.eq.enabled);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Flat")) {
+        const bool wasOn = b.eq.enabled;
+        b.eq = dsp::EqParams{};
+        b.eq.enabled = wasOn;
+        changed = true;
+    }
+    ImGui::Spacing();
+
+    ImGui::BeginDisabled(!b.eq.enabled);
+    changed |= drawBand("High-pass", b.eq.hp, false);
+    changed |= drawBand("Low", b.eq.low, true);
+    changed |= drawBand("Mid", b.eq.mid, true);
+    changed |= drawBand("High", b.eq.high, true);
+    ImGui::EndDisabled();
+
+    if (changed) saveSettings();
+    ImGui::EndPopup();
 }
 
 void drawUi() {
@@ -338,7 +416,7 @@ void drawUi() {
         ImGui::TableSetupColumn("Level", ImGuiTableColumnFlags_WidthFixed, 120.0f);
         ImGui::TableSetupColumn("Headphones", ImGuiTableColumnFlags_WidthFixed, 175.0f);
         ImGui::TableSetupColumn("Stream", ImGuiTableColumnFlags_WidthFixed, 175.0f);
-        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 42.0f);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 76.0f);
         ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableHeadersRow();
 
@@ -396,6 +474,11 @@ void drawUi() {
                 b.muted = !muted;
                 saveSettings();
             }
+            ImGui::SameLine(0.0f, 4.0f);
+            if (b.eq.enabled) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22f, 0.45f, 0.50f, 1.0f));
+            if (ImGui::Button("EQ", ImVec2(30, 0))) ImGui::OpenPopup("eq");
+            if (b.eq.enabled) ImGui::PopStyleColor();
+            drawEqPopup(b);
             if (muted) ImGui::PopStyleColor();
 
             ImGui::TableSetColumnIndex(5);

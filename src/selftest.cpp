@@ -7,6 +7,7 @@
 // for the gaps and repeats that a broken clock produces.
 
 #include "audio.h"
+#include "dsp.h"
 
 #include <mmdeviceapi.h>
 #include <audioclient.h>
@@ -246,4 +247,112 @@ int runSelfTest(const std::string& channel, int seconds) {
     }
     std::printf("\nFAIL\n");
     return 1;
+}
+
+// ---- offline DSP checks -------------------------------------------------
+//
+// No devices, no audio hardware, no listening. Push a sine through the filter
+// chain and measure what comes out, so a wrong coefficient is caught by a test
+// rather than by ear.
+
+namespace {
+
+// Steady-state gain of the chain at one frequency, in dB. The first half of
+// the buffer is discarded so the filter has settled before measuring.
+double gainAtDb(const dsp::EqParams& p, double freq) {
+    dsp::ChannelStrip strip;
+    strip.prepare(kSampleRate);
+
+    const size_t frames = 24000;
+    std::vector<float> buf(frames * kChannels);
+    const double step = 2.0 * 3.14159265358979 * freq / kSampleRate;
+    for (size_t i = 0; i < frames; ++i) {
+        const float v = static_cast<float>(std::sin(step * static_cast<double>(i)));
+        for (unsigned c = 0; c < kChannels; ++c) buf[i * kChannels + c] = v;
+    }
+    strip.process(p, buf.data(), frames, kChannels);
+
+    double sumSq = 0.0;
+    const size_t from = frames / 2;
+    for (size_t i = from; i < frames; ++i) {
+        const double v = buf[i * kChannels];
+        sumSq += v * v;
+    }
+    const double rms = std::sqrt(sumSq / static_cast<double>(frames - from));
+    const double ref = std::sqrt(0.5);          // RMS of a unit sine
+    return 20.0 * std::log10(rms / ref);
+}
+
+bool checkDb(const char* what, double got, double want, double tolerance) {
+    const bool ok = std::fabs(got - want) <= tolerance;
+    std::printf("  %-44s %+6.2f dB (want %+.1f +/- %.1f)  %s\n",
+                what, got, want, tolerance, ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+}  // namespace
+
+int runDspTest() {
+    std::printf("DSP checks at %u Hz\n\n", kSampleRate);
+    bool ok = true;
+
+    {
+        dsp::EqParams p;
+        p.enabled = true;
+        ok &= checkDb("flat chain passes 1 kHz unchanged", gainAtDb(p, 1000.0), 0.0, 0.2);
+    }
+    {
+        // Disabled EQ must be bit-transparent, not merely close.
+        dsp::EqParams p;
+        p.enabled = false;
+        ok &= checkDb("disabled chain passes 100 Hz unchanged", gainAtDb(p, 100.0), 0.0, 0.01);
+    }
+    {
+        dsp::EqParams p;
+        p.enabled = true;
+        p.low.on = p.mid.on = p.high.on = false;
+        p.hp.on = true;
+        p.hp.freq = 1000.0f;
+        // A 2nd-order high-pass rolls off 12 dB per octave, so 250 Hz is two
+        // octaves down and should land near -24 dB.
+        ok &= checkDb("high-pass 1 kHz attenuates 250 Hz", gainAtDb(p, 250.0), -24.0, 3.0);
+        ok &= checkDb("high-pass 1 kHz passes 8 kHz", gainAtDb(p, 8000.0), 0.0, 0.5);
+        ok &= checkDb("high-pass is -3 dB at its corner", gainAtDb(p, 1000.0), -3.0, 0.7);
+    }
+    {
+        dsp::EqParams p;
+        p.enabled = true;
+        p.low.on = p.high.on = false;
+        p.mid.on = true;
+        p.mid.freq = 1000.0f;
+        p.mid.gainDb = 12.0f;
+        p.mid.q = 2.0f;
+        ok &= checkDb("peak +12 dB at 1 kHz", gainAtDb(p, 1000.0), 12.0, 0.3);
+        ok &= checkDb("peak leaves 100 Hz alone", gainAtDb(p, 100.0), 0.0, 0.5);
+    }
+    {
+        dsp::EqParams p;
+        p.enabled = true;
+        p.mid.on = p.high.on = false;
+        p.low.on = true;
+        p.low.freq = 200.0f;
+        p.low.gainDb = -12.0f;
+        ok &= checkDb("low shelf -12 dB reaches full cut at 40 Hz",
+                      gainAtDb(p, 40.0), -12.0, 1.5);
+        ok &= checkDb("low shelf leaves 8 kHz alone", gainAtDb(p, 8000.0), 0.0, 0.5);
+    }
+    {
+        dsp::EqParams p;
+        p.enabled = true;
+        p.low.on = p.mid.on = false;
+        p.high.on = true;
+        p.high.freq = 6000.0f;
+        p.high.gainDb = 9.0f;
+        ok &= checkDb("high shelf +9 dB reaches full boost at 16 kHz",
+                      gainAtDb(p, 16000.0), 9.0, 1.5);
+        ok &= checkDb("high shelf leaves 200 Hz alone", gainAtDb(p, 200.0), 0.0, 0.5);
+    }
+
+    std::printf("\n%s\n", ok ? "PASS - all DSP checks" : "FAIL");
+    return ok ? 0 : 1;
 }

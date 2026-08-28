@@ -64,6 +64,7 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
     for (auto& b : buses_) {
         b.ring.reset(kSampleRate / 2, kChannels);
         if (!b.isCapture) b.stream.reset(kSampleRate / 4, kChannels);
+        b.strip.prepare(kSampleRate);
     }
 
     if (!out_.start(&buses_, cfg_.outMatch, err)) return false;
@@ -85,6 +86,8 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
             ep->source      = &buses_[i].stream;
             ep->streamGain  = &buses_[i].streamGain;
             ep->streamMuted = &buses_[i].streamMuted;
+            ep->eq          = &buses_[i].eq;
+            ep->strip       = &buses_[i].strip;
         }
         ep->busid = "1-" + std::to_string(i + 1);
         endpoints_.push_back(std::move(ep));
@@ -103,6 +106,7 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
         for (auto& b : buses_) {
             if (!b.isCapture) continue;
             std::string micErr;
+            mic_.setEq(&b.eq, &b.strip);
             if (mic_.start(&b.ring, cfg_.micMatch, micErr)) {
                 micDeviceName_ = mic_.deviceName();
             } else {
@@ -180,7 +184,11 @@ bool Engine::setMicDevice(const std::string& match, std::string& err) {
     if (!running_) return false;
     FloatRing* ring = nullptr;
     for (auto& b : buses_) {
-        if (b.isCapture) { ring = &b.ring; break; }
+        if (b.isCapture) {
+            ring = &b.ring;
+            mic_.setEq(&b.eq, &b.strip);
+            break;
+        }
     }
     if (!ring) {
         err = "no microphone bus";

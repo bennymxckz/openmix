@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "ring.h"
+#include "dsp.h"
 #include "usb_audio.h"
 
 // One exported device, paired with the bus it feeds.
@@ -27,6 +28,10 @@ struct VirtualEndpoint {
     FloatRing* streamTap = nullptr;
     const float* streamGain = nullptr;
     const bool* streamMuted = nullptr;
+    // Applied to arriving audio before it is split, so monitor and stream
+    // hear the same processed channel.
+    dsp::EqParams* eq = nullptr;
+    dsp::ChannelStrip* strip = nullptr;
     std::string busid;               // e.g. "1-1"
     std::atomic<bool> attached{false};
     std::atomic<unsigned long long> framesIn{0};
