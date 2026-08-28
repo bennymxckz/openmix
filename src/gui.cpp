@@ -605,7 +605,7 @@ void drawUi() {
         ImGui::TableSetupColumn("Channel", ImGuiTableColumnFlags_WidthFixed, 80.0f);
         ImGui::TableSetupColumn("Level", ImGuiTableColumnFlags_WidthFixed, 120.0f);
         ImGui::TableSetupColumn("Headphones", ImGuiTableColumnFlags_WidthFixed, 175.0f);
-        ImGui::TableSetupColumn("Stream", ImGuiTableColumnFlags_WidthFixed, 175.0f);
+        ImGui::TableSetupColumn("Stream / to apps", ImGuiTableColumnFlags_WidthFixed, 175.0f);
         ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 76.0f);
         ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableHeadersRow();
@@ -637,11 +637,11 @@ void drawUi() {
             if (ImGui::IsItemDeactivatedAfterEdit()) saveSettings();
 
             // Stream level: what OBS records, independently.
+            // For a playback channel this is what the stream hears; for the
+            // microphone it is what applications hear. Same control, and in
+            // both cases it is independent of the headphone fader.
             ImGui::TableSetColumnIndex(3);
-            if (b.isCapture) {
-                ImGui::AlignTextToFramePadding();
-                ImGui::TextDisabled("apps hear this");
-            } else {
+            {
                 float sdb = dbFromGain(b.streamGain);
                 ImGui::SetNextItemWidth(165.0f);
                 if (ImGui::SliderFloat("##stream", &sdb, -60.0f, 12.0f, "%.1f dB")) {
@@ -649,7 +649,7 @@ void drawUi() {
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit()) saveSettings();
                 if (ImGui::BeginPopupContextItem("##streamctx")) {
-                    if (ImGui::MenuItem(b.streamMuted ? "Unmute stream" : "Mute stream")) {
+                    if (ImGui::MenuItem(b.streamMuted ? "Unmute" : "Mute")) {
                         b.streamMuted = !b.streamMuted;
                         saveSettings();
                     }

@@ -79,6 +79,10 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
             cap ? usbaudio::Direction::Capture : usbaudio::Direction::Duplex);
         if (cap) {
             ep->source = &buses_[i].ring;
+            // The stream fader is how loud applications hear the microphone;
+            // the headphone fader is how loud you hear yourself.
+            ep->streamGain  = &buses_[i].streamGain;
+            ep->streamMuted = &buses_[i].streamMuted;
         } else {
             // Playback channels are duplex: applications render in, OBS
             // records the same audio back out at its own level.
