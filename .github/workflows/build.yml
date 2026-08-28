@@ -1,0 +1,39 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        shell: cmd
+        env:
+          CC: cl
+          CXX: cl
+
+      - name: Build
+        run: cmake --build build
+        shell: cmd
+
+      # The filter and dynamics checks are pure arithmetic, so they run on a
+      # runner with no audio hardware at all. The round-trip test cannot: it
+      # needs the usbip driver and a live openmix, so it stays a local check.
+      - name: DSP checks
+        run: build\openmix-cli.exe --dsptest
+        shell: cmd
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: openmix-windows
+          path: |
+            build/openmix.exe
+            build/openmix-cli.exe
