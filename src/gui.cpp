@@ -66,6 +66,7 @@ char g_newChannel[32] = {};
 bool g_autostart = false;
 bool g_showSettings = false;
 bool g_showWelcome = false;
+std::string g_channelError;
 bool g_micHotkey = false;
 bool g_hotkeyFailed = false;
 
@@ -909,6 +910,14 @@ void drawSettings() {
     ImGui::SameLine();
     const bool clicked = ImGui::Button("Add");
 
+    if (!g_channelError.empty()) {
+        ImGui::PushFont(g_fontSmall);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(theme::kMuted));
+        ImGui::TextUnformatted(g_channelError.c_str());
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+    }
+
     if ((entered || clicked) && g_newChannel[0] != 0) {
         std::string name = g_newChannel;
         // The name becomes a USB serial and a Windows device name, so keep it
@@ -919,8 +928,30 @@ void drawSettings() {
         while (!name.empty() && name.front() == ' ') name.erase(name.begin());
         while (!name.empty() && name.back() == ' ') name.pop_back();
 
-        const bool dup = std::find(g_channels.begin(), g_channels.end(), name) != g_channels.end();
-        if (!name.empty() && !dup && g_channels.size() < 8) {
+        auto sameName = [](const std::string& a, const std::string& b) {
+            if (a.size() != b.size()) return false;
+            for (size_t i = 0; i < a.size(); ++i) {
+                if (std::tolower(static_cast<unsigned char>(a[i])) !=
+                    std::tolower(static_cast<unsigned char>(b[i]))) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        g_channelError.clear();
+        if (name.empty()) {
+            g_channelError = "Use letters and numbers.";
+        } else if (sameName(name, "Mic")) {
+            // A channel's USB identity comes from its name, so a second "Mic"
+            // would claim the microphone's device.
+            g_channelError = "\"Mic\" is taken by the microphone channel.";
+        } else if (std::any_of(g_channels.begin(), g_channels.end(),
+                               [&](const std::string& c) { return sameName(c, name); })) {
+            g_channelError = "There is already a channel called that.";
+        } else if (g_channels.size() >= 8) {
+            g_channelError = "Eight channels is the limit.";
+        } else {
             g_channels.push_back(name);
             g_newChannel[0] = 0;
             g_config.set("channels", joinChannels(g_channels));
@@ -1294,7 +1325,18 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     g_showWelcome = !g_config.existed() || !g_config.getBool("welcomed", false);
     if (g_config.getBool("micHotkey", false)) setMicHotkey(true);
     {
-        const auto saved = splitChannels(g_config.get("channels"));
+        auto saved = splitChannels(g_config.get("channels"));
+        // Drop anything that would collide with the microphone channel: an
+        // older config could contain one, and two buses with the same name
+        // would claim the same USB identity.
+        saved.erase(std::remove_if(saved.begin(), saved.end(),
+                                   [](const std::string& c) {
+                                       return c.size() == 3 &&
+                                              std::tolower(static_cast<unsigned char>(c[0])) == 'm' &&
+                                              std::tolower(static_cast<unsigned char>(c[1])) == 'i' &&
+                                              std::tolower(static_cast<unsigned char>(c[2])) == 'c';
+                                   }),
+                    saved.end());
         if (!saved.empty()) g_channels = saved;
     }
 
