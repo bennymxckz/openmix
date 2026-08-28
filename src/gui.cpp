@@ -339,7 +339,12 @@ void saveSettings() {
 
 void applySettings() {
     for (auto& b : g_engine.buses()) {
-        b.gain        = g_config.getFloat("bus." + b.name + ".gain", 1.0f);
+        // The microphone's headphone fader defaults to silent. Hearing your own
+        // voice unasked is startling, and on speakers it feeds back. The
+        // engine sets this too, but loading settings runs afterwards and would
+        // otherwise put it back to full for anyone with no saved value.
+        b.gain        = g_config.getFloat("bus." + b.name + ".gain",
+                                          b.isCapture ? 0.0f : 1.0f);
         b.muted       = g_config.getBool("bus." + b.name + ".mute", false);
         b.streamGain  = g_config.getFloat("bus." + b.name + ".streamGain", 1.0f);
         b.streamMuted = g_config.getBool("bus." + b.name + ".streamMute", false);
