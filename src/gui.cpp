@@ -184,8 +184,10 @@ LRESULT WINAPI wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         case WM_GETMINMAXINFO: {
             // Below this the strips overlap and the window stops being useful.
+            // Wide enough for the four default channels without scrolling:
+            // four 138 px strips, their gaps, and the window padding.
             auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
-            mmi->ptMinTrackSize.x = static_cast<LONG>(560 * g_scale);
+            mmi->ptMinTrackSize.x = static_cast<LONG>(624 * g_scale);
             mmi->ptMinTrackSize.y = static_cast<LONG>(470 * g_scale);
             return 0;
         }
