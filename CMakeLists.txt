@@ -4,6 +4,12 @@ project(openmix LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Link the C++ runtime statically. openmix ships as a zip you unzip and run,
+# and a dynamic runtime makes that a lie: the executable would refuse to start
+# on any machine without the Visual C++ redistributable, with an error message
+# that says nothing useful.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 # Dear ImGui: MIT, so the project stays MIT. Pinned so a build is reproducible.
 include(FetchContent)
 FetchContent_Declare(
