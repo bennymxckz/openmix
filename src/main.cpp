@@ -182,6 +182,7 @@ int main(int argc, char** argv) {
     bool selfTest = false;
     bool dspTest = false;
     std::string selfTestChannel = "Game";
+    int selfTestSeconds = 5;
     bool noMic = false;
     std::string outMatch;
     std::string micMatch;
@@ -199,6 +200,11 @@ int main(int argc, char** argv) {
         if (a == "--selftest") {
             selfTest = true;
             if (i + 1 < argc && argv[i + 1][0] != 0x2D) selfTestChannel = argv[++i];
+            // A longer run is what catches slow drift; five seconds only
+            // proves the stream started.
+            if (i + 1 < argc && argv[i + 1][0] >= 0x30 && argv[i + 1][0] <= 0x39) {
+                selfTestSeconds = std::atoi(argv[++i]);
+            }
             continue;
         }
         if (a == "--out" && i + 1 < argc) { outMatch = argv[++i]; continue; }
@@ -266,7 +272,7 @@ int main(int argc, char** argv) {
     }
 
     if (selfTest) {
-        const int rc = runSelfTest(selfTestChannel, 5);
+        const int rc = runSelfTest(selfTestChannel, selfTestSeconds);
         ::CoUninitialize();
         return rc;
     }

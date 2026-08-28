@@ -121,6 +121,7 @@ correctness is measured rather than listened for.
 ```
 build\openmix-cli.exe --dsptest     filter and dynamics response, offline
 build\openmix-cli.exe --selftest    round trip through a live channel
+build\openmix-cli.exe --selftest Game 60   ...for longer, to catch drift
 ```
 
 `--dsptest` is pure arithmetic — no devices, no audio hardware — so it runs in
