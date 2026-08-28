@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <cctype>
 
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
@@ -45,6 +47,32 @@ std::vector<RenderDevice> g_outDevices;
 std::vector<RenderDevice> g_micDevices;
 std::string g_deviceError;
 Config g_config;
+std::vector<std::string> g_channels{"Game", "Chat", "Media"};
+char g_newChannel[32] = {};
+
+std::string joinChannels(const std::vector<std::string>& v) {
+    std::string out;
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) out += ",";
+        out += v[i];
+    }
+    return out;
+}
+
+std::vector<std::string> splitChannels(const std::string& s) {
+    std::vector<std::string> out;
+    size_t start = 0;
+    while (start <= s.size()) {
+        const size_t comma = s.find(',', start);
+        const std::string part =
+            s.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+        if (!part.empty()) out.push_back(part);
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+    return out;
+}
+
 bool g_autostart = false;
 
 void createRenderTarget() {
@@ -386,6 +414,76 @@ void drawEqPopup(Bus& b) {
     ImGui::EndPopup();
 }
 
+// Channels are USB devices, so adding or removing one means republishing the
+// device set. Restarting the engine is the honest way to do that; it takes
+// about a second and applications reconnect on their own.
+void restartEngine() {
+    saveSettings();
+    g_engine.stop();
+
+    EngineConfig cfg;
+    cfg.playbackBuses = g_channels;
+    cfg.outMatch = g_config.get("output");
+    cfg.micMatch = g_config.get("mic");
+    g_startError.clear();
+    if (g_engine.start(cfg, g_startError)) applySettings();
+}
+
+void drawChannelEditor() {
+    if (!ImGui::CollapsingHeader("Channels")) return;
+
+    ImGui::TextDisabled("Each channel is a device applications can select.");
+    ImGui::Spacing();
+
+    int removeAt = -1;
+    for (size_t i = 0; i < g_channels.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("Openmix - %s", g_channels[i].c_str());
+        ImGui::SameLine(220.0f);
+        // One playback channel has to remain, or there is nothing to mix.
+        ImGui::BeginDisabled(g_channels.size() <= 1);
+        if (ImGui::SmallButton("Remove")) removeAt = static_cast<int>(i);
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    }
+
+    ImGui::Spacing();
+    ImGui::SetNextItemWidth(200.0f);
+    const bool entered = ImGui::InputTextWithHint("##newch", "New channel name",
+                                                  g_newChannel, sizeof(g_newChannel),
+                                                  ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    const bool clicked = ImGui::Button("Add");
+
+    if ((entered || clicked) && g_newChannel[0] != 0) {
+        std::string name = g_newChannel;
+        // The name becomes a USB serial and a Windows device name, so keep it
+        // to something both will accept.
+        name.erase(std::remove_if(name.begin(), name.end(),
+                                  [](unsigned char c) { return !std::isalnum(c) && c != ' '; }),
+                   name.end());
+        while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+        while (!name.empty() && name.back() == ' ') name.pop_back();
+
+        const bool dup = std::find(g_channels.begin(), g_channels.end(), name) != g_channels.end();
+        if (!name.empty() && !dup && g_channels.size() < 8) {
+            g_channels.push_back(name);
+            g_newChannel[0] = 0;
+            g_config.set("channels", joinChannels(g_channels));
+            g_config.save();
+            restartEngine();
+        }
+    }
+
+    if (removeAt >= 0) {
+        g_channels.erase(g_channels.begin() + removeAt);
+        g_config.set("channels", joinChannels(g_channels));
+        g_config.save();
+        restartEngine();
+    }
+}
+
 void drawUi() {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
@@ -400,11 +498,7 @@ void drawUi() {
         if (!g_startError.empty()) ImGui::TextWrapped("%s", g_startError.c_str());
         ImGui::Spacing();
         if (ImGui::Button("Retry")) {
-            EngineConfig cfg;
-            cfg.outMatch = g_config.get("output");
-            cfg.micMatch = g_config.get("mic");
-            g_startError.clear();
-            if (g_engine.start(cfg, g_startError)) applySettings();
+            restartEngine();
         }
         ImGui::End();
         return;
@@ -578,6 +672,9 @@ void drawUi() {
     ImGui::Spacing();
     ImGui::Separator();
 
+    drawChannelEditor();
+    ImGui::Spacing();
+
     if (ImGui::Checkbox("Start with Windows", &g_autostart)) {
         if (!setAutostart(g_autostart)) {
             g_autostart = autostartEnabled();   // registry refused; show the truth
@@ -667,8 +764,13 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
 
     g_config.load();
     g_autostart = autostartEnabled();
+    {
+        const auto saved = splitChannels(g_config.get("channels"));
+        if (!saved.empty()) g_channels = saved;
+    }
 
     EngineConfig cfg;
+    cfg.playbackBuses = g_channels;
     cfg.outMatch = g_config.get("output");
     cfg.micMatch = g_config.get("mic");
     if (g_engine.start(cfg, g_startError)) {

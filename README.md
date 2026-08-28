@@ -59,6 +59,11 @@ pickers for your headphones and microphone. Changing either restarts only
 that stream, so applications pointed at the openmix devices never notice. The
 devices are plugged in at startup and unplug when openmix exits.
 
+Channels are not fixed. The Channels section of the window adds and removes
+them, so you can have a Browser or Alerts channel alongside the defaults --
+each one becomes its own pair of Windows devices. Changing the set restarts
+the engine, which takes about a second.
+
 ### Device names
 
 Windows composes USB audio endpoint names as `<terminal type> (<product>)`
