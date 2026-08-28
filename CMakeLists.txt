@@ -47,7 +47,7 @@ target_link_libraries(openmix_core PUBLIC
 )
 
 # The application: a windowed mixer that lives in the tray.
-add_executable(openmix WIN32 src/gui.cpp)
+add_executable(openmix WIN32 src/gui.cpp res/openmix.rc)
 target_link_libraries(openmix PRIVATE openmix_core imgui dwmapi shell32)
 
 # Console build, kept for debugging and headless use.

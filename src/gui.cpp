@@ -132,7 +132,8 @@ void addTrayIcon(HWND hwnd) {
     g_tray.uID = 1;
     g_tray.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_tray.uCallbackMessage = WM_OPENMIX_TRAY;
-    g_tray.hIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
+    g_tray.hIcon = ::LoadIconW(::GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1));
+    if (!g_tray.hIcon) g_tray.hIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
     ::wcscpy_s(g_tray.szTip, L"openmix");
     ::Shell_NotifyIconW(NIM_ADD, &g_tray);
 }
@@ -722,6 +723,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     wc.lpfnWndProc = wndProc;
     wc.hInstance = hInst;
     wc.hCursor = ::LoadCursor(nullptr, IDC_ARROW);
+    wc.hIcon = ::LoadIconW(hInst, MAKEINTRESOURCEW(1));
+    wc.hIconSm = ::LoadIconW(hInst, MAKEINTRESOURCEW(1));
     wc.lpszClassName = L"openmixWindow";
     ::RegisterClassExW(&wc);
 

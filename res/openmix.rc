@@ -1,0 +1,31 @@
+#include <windows.h>
+
+// Windows uses the numerically lowest icon resource as the executable's
+// display icon, so this stays 1.
+1 ICON "openmix.ico"
+
+1 VERSIONINFO
+FILEVERSION     0,3,0,0
+PRODUCTVERSION  0,3,0,0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "openmix"
+            VALUE "FileDescription",  "Per-application audio mixer"
+            VALUE "FileVersion",      "0.3.0"
+            VALUE "InternalName",     "openmix"
+            VALUE "LegalCopyright",   "MIT licensed"
+            VALUE "OriginalFilename", "openmix.exe"
+            VALUE "ProductName",      "openmix"
+            VALUE "ProductVersion",   "0.3.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
