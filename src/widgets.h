@@ -113,6 +113,17 @@ inline bool verticalFader(const char* id, float* db, ImVec2 size, ImU32 accent,
     if (released) *released = ImGui::IsItemDeactivatedAfterEdit();
 
     bool changed = false;
+    // A wheel notch is 1 dB, or a fifth of that with Ctrl held, because most
+    // adjustments are small and dragging a 72 dB travel precisely is fiddly.
+    if (hovered) {
+        const float wheel = ImGui::GetIO().MouseWheel;
+        if (wheel != 0.0f) {
+            *db = std::clamp(*db + wheel * (ImGui::GetIO().KeyCtrl ? 0.2f : 1.0f),
+                             -60.0f, 12.0f);
+            changed = true;
+            if (released) *released = true;   // persist it like a drag
+        }
+    }
     if (ImGui::IsItemActivated() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
         *db = 0.0f;
         changed = true;

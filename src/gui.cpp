@@ -32,6 +32,9 @@ namespace {
 constexpr UINT WM_OPENMIX_TRAY = WM_APP + 1;
 constexpr UINT ID_TRAY_SHOW = 1001;
 constexpr UINT ID_TRAY_QUIT = 1002;
+// Muting the microphone is the one thing worth reaching for without
+// finding the window first.
+constexpr int ID_HOTKEY_MIC = 1;
 
 ID3D11Device*           g_device = nullptr;
 ID3D11DeviceContext*    g_context = nullptr;
@@ -61,6 +64,8 @@ std::vector<std::string> g_channels{"Game", "Chat", "Media"};
 char g_newChannel[32] = {};
 bool g_autostart = false;
 bool g_showSettings = false;
+bool g_micHotkey = false;
+bool g_hotkeyFailed = false;
 
 // ---- device plumbing ---------------------------------------------------
 
@@ -198,6 +203,19 @@ LRESULT WINAPI wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (LOWORD(wp) == ID_TRAY_QUIT) { ::PostQuitMessage(0); return 0; }
             break;
 
+        case WM_HOTKEY:
+            if (wp == ID_HOTKEY_MIC) {
+                // Mute the stream side: what applications hear. The headphone
+                // side is your own monitoring and is a separate thing.
+                for (auto& b : g_engine.buses()) {
+                    if (!b.isCapture) continue;
+                    b.streamMuted = !b.streamMuted;
+                    break;
+                }
+                return 0;
+            }
+            break;
+
         case WM_DESTROY:
             ::PostQuitMessage(0);
             return 0;
@@ -317,6 +335,22 @@ void refreshChannelApps() {
             break;
         }
     }
+}
+
+void setMicHotkey(bool on) {
+    ::UnregisterHotKey(g_hwnd, ID_HOTKEY_MIC);
+    g_hotkeyFailed = false;
+    if (on) {
+        // Ctrl+Alt+M: unlikely to collide, and nothing else in openmix needs
+        // a global key.
+        if (!::RegisterHotKey(g_hwnd, ID_HOTKEY_MIC, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'M')) {
+            g_hotkeyFailed = true;   // something else already owns it
+            on = false;
+        }
+    }
+    g_micHotkey = on;
+    g_config.setBool("micHotkey", on);
+    g_config.save();
 }
 
 void restartEngine() {
@@ -595,6 +629,15 @@ void drawStrip(size_t index, Bus& b, bool attached, float rate, float height) {
     }
     tip("Silence this in your headphones only");
 
+    if (b.isCapture && b.streamMuted) {
+        // A muted microphone that looks fine is how people talk to nobody for
+        // ten minutes, so it is called out rather than implied by a fader.
+        ImDrawList* d2 = ImGui::GetWindowDrawList();
+        const ImVec2 wp = ImGui::GetWindowPos();
+        const ImVec2 ws = ImGui::GetWindowSize();
+        d2->AddRect(wp, ImVec2(wp.x + ws.x, wp.y + ws.y), theme::kMuted, 8.0f, 0, 2.0f);
+    }
+
     ImGui::SameLine(0.0f, 6.0f * g_scale);
     if (mix::pillButton(b.isCapture ? "FX" : "EQ", dspOn,
                         ImVec2(36.0f * g_scale, 24.0f * g_scale), theme::kAccent)) {
@@ -713,6 +756,17 @@ void drawSettings() {
     ImGui::TextUnformatted("General");
     ImGui::PopFont();
     ImGui::Spacing();
+
+    bool hk = g_micHotkey;
+    if (ImGui::Checkbox("Mute microphone with Ctrl+Alt+M", &hk)) setMicHotkey(hk);
+    tip("Works while any application is focused");
+    if (g_hotkeyFailed) {
+        ImGui::PushFont(g_fontSmall);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(theme::kMuted));
+        ImGui::TextUnformatted("Another application already uses that shortcut.");
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+    }
 
     if (ImGui::Checkbox("Start with Windows", &g_autostart)) {
         if (!setAutostart(g_autostart)) {
@@ -995,6 +1049,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
 
     g_config.load();
     g_autostart = autostartEnabled();
+    if (g_config.getBool("micHotkey", false)) setMicHotkey(true);
     {
         const auto saved = splitChannels(g_config.get("channels"));
         if (!saved.empty()) g_channels = saved;
@@ -1068,6 +1123,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
 
+    ::UnregisterHotKey(g_hwnd, ID_HOTKEY_MIC);
     removeTrayIcon();
     cleanupDevice();
     ::DestroyWindow(g_hwnd);

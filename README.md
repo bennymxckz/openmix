@@ -112,6 +112,9 @@ If old entries have accumulated from earlier versions, clear them with
 - Settings persist to `%APPDATA%\openmix\config.ini` as plain text, written
   when they change rather than only at exit.
 - Optional start with Windows, straight to the tray.
+- Optional global Ctrl+Alt+M to mute the microphone from anywhere.
+- Each strip names the applications playing to it, so routing can be
+  confirmed rather than assumed.
 
 ## Testing
 
