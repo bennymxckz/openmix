@@ -67,6 +67,7 @@ bool g_autostart = false;
 bool g_showSettings = false;
 bool g_showWelcome = false;
 bool g_ownDefaults = false;
+bool g_linkDevices = true;
 
 // Defined further down, but used by the engine restart and shutdown paths
 // above them.
@@ -290,6 +291,7 @@ void saveSettings() {
         g_config.setFloat(k + "gain", b.gain);
         g_config.setBool(k + "mute", b.muted);
         g_config.setFloat(k + "monitor", b.monitorGain);
+        g_config.set(k + "device", b.outputDevice);
 
         const std::string e = k + "eq.";
         g_config.setBool(e + "on", b.eq.enabled);
@@ -323,6 +325,7 @@ void applySettings() {
         b.gain        = g_config.getFloat(k + "gain", 1.0f);
         b.muted       = g_config.getBool(k + "mute", false);
         b.monitorGain = g_config.getFloat(k + "monitor", 0.0f);
+        b.outputDevice = g_config.get(k + "device");
 
         const std::string e = k + "eq.";
         b.eq.enabled = g_config.getBool(e + "on", false);
@@ -428,6 +431,35 @@ void setMicHotkey(bool on) {
     g_micHotkey = on;
     g_config.setBool("micHotkey", on);
     g_config.save();
+}
+
+// Shorten a Windows device name for a narrow strip. "Speakers (HyperX Cloud
+// Alpha S Game)" is mostly packaging; the part inside the brackets is the part
+// that identifies it.
+std::string shortDeviceName(const std::string& full) {
+    const size_t open = full.find(" (");
+    if (open == std::string::npos) return full;
+    const size_t close = full.find_last_of(')');
+    if (close == std::string::npos || close <= open + 2) return full;
+    return full.substr(open + 2, close - open - 2);
+}
+
+void routeChannel(size_t index, const std::string& device) {
+    std::string err;
+    auto& buses = g_engine.buses();
+    if (g_linkDevices) {
+        // Linked: one choice moves every playback channel, which is what the
+        // link is for. The microphone has no output of its own.
+        for (size_t i = 0; i < buses.size(); ++i) {
+            if (buses[i].isCapture) continue;
+            buses[i].outputDevice = device;
+        }
+        if (!g_engine.setOutputDevice(device, err)) g_notice = err;
+    } else if (index < buses.size()) {
+        if (!g_engine.setChannelDevice(index, device, err)) g_notice = err;
+    }
+    if (err.empty()) g_notice.clear();
+    saveSettings();
 }
 
 void restartEngine() {
@@ -818,11 +850,39 @@ void drawStrip(size_t index, Bus& b, bool attached, float rate, float height) {
     ImGui::PopFont();
 
     ImGui::Unindent(10.0f * g_scale);
-    ImGui::Dummy(ImVec2(0, 6.0f * g_scale));
+    ImGui::Dummy(ImVec2(0, 4.0f * g_scale));
+
+    // Where this channel is heard. The microphone has no output of its own.
+    if (!b.isCapture) {
+        const std::string current = b.outputDevice.empty() ? g_engine.monitorDevice()
+                                                           : b.outputDevice;
+        ImGui::SetCursorPosX(8.0f * g_scale);
+        ImGui::SetNextItemWidth(stripW - 16.0f * g_scale);
+        ImGui::PushFont(g_fontSmall);
+        if (ImGui::BeginCombo("##dev", shortDeviceName(current).c_str(),
+                              ImGuiComboFlags_HeightSmall)) {
+            for (const auto& d : g_outDevices) {
+                if (d.isOpenmix) continue;   // routing a channel into itself
+                if (ImGui::Selectable(d.name.c_str(), d.name == current)) {
+                    routeChannel(index, d.name);
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::PopFont();
+        tip(g_linkDevices ? "Output device. Channels are linked, so this moves them all."
+                          : "Output device for this channel only.");
+    } else {
+        ImGui::Dummy(ImVec2(0, ImGui::GetFrameHeight()));
+    }
+
+    ImGui::Dummy(ImVec2(0, 4.0f * g_scale));
 
     // One level per channel: what you set is what everyone gets, here and on
     // the stream. Two faders per channel read as twice the decision.
-    const float faderH = height - 176.0f * g_scale;
+    // Everything above and below the fader: name, apps, device row, the
+    // percentage, and the button row. The fader takes what is left.
+    const float faderH = height - 218.0f * g_scale;
     const float meterW = 13.0f * g_scale;
     const float faderW = 46.0f * g_scale;
 
@@ -1219,14 +1279,15 @@ void drawUi() {
 
     const float headerY = ImGui::GetCursorPosY();
     const float rescanW = 62.0f * g_scale;
+    const float linkW = 62.0f * g_scale;
     const float settingsW = 70.0f * g_scale;
     const float pad = ImGui::GetStyle().WindowPadding.x;
     const float gap = 16.0f * g_scale;
 
     // Share the space left over by the buttons equally, so a narrow window
     // shortens both device names rather than one.
-    const float forPickers =
-        ImGui::GetWindowWidth() - pad * 2.0f - rescanW - settingsW - 6.0f * g_scale - gap * 2.0f;
+    const float forPickers = ImGui::GetWindowWidth() - pad * 2.0f - rescanW - linkW
+                             - settingsW - 12.0f * g_scale - gap * 2.0f;
     const float pickerW =
         (std::max)(130.0f * g_scale, (std::min)(forPickers * 0.5f, 260.0f * g_scale));
 
@@ -1239,7 +1300,18 @@ void drawUi() {
                      g_engine.micDevice(), false, pickerW);
     // Line the buttons up with the combo boxes rather than with their labels.
     ImGui::SetCursorPosY(headerY + ImGui::GetTextLineHeight() + 6.0f * g_scale);
-    ImGui::SetCursorPosX(ImGui::GetWindowWidth() - pad - settingsW - 6.0f * g_scale - rescanW);
+    ImGui::SetCursorPosX(ImGui::GetWindowWidth() - pad - settingsW - 12.0f * g_scale
+                         - rescanW - linkW);
+    ImGui::PushFont(g_fontSmall);
+    if (ImGui::Checkbox("Link", &g_linkDevices)) {
+        g_config.setBool("linkDevices", g_linkDevices);
+        if (g_linkDevices) routeChannel(0, g_engine.monitorDevice());
+        g_config.save();
+    }
+    ImGui::PopFont();
+    tip("Keep every channel on the same output device");
+    ImGui::SameLine(0.0f, 8.0f * g_scale);
+
     if (ImGui::Button("Rescan", ImVec2(rescanW, 0))) {
         g_outDevices = listRenderDevices();
         g_micDevices = listCaptureDevices();
@@ -1467,6 +1539,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     cfg.micMatch = g_config.get("mic");
     if (g_engine.start(cfg, g_startError)) applySettings();
 
+    g_linkDevices = g_config.getBool("linkDevices", true);
     g_ownDefaults = g_config.getBool("ownDefaults", false);
     if (g_ownDefaults) {
         // The endpoints only exist once the engine has attached them.

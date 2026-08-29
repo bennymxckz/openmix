@@ -180,11 +180,11 @@ bool renameEndpoint(const std::wstring& deviceId, const std::wstring& newName) {
 }
 
 bool MonitorOutput::owns(const Bus& b) const {
-    // A channel with no device of its own follows this output. That has to be
-    // the default: if unrouted channels belonged to nobody, their rings would
-    // never drain, and the playback worker clock-locks to that draining -- it
-    // would block on every packet and throughput would collapse.
-    if (b.outputDevice.empty()) return true;
+    // A channel with no device of its own follows the primary output. Exactly
+    // one output must claim them: if none did, their rings would never drain,
+    // and the playback worker clock-locks to that draining -- it would block on
+    // every packet and throughput would collapse.
+    if (b.outputDevice.empty()) return primary_;
     return b.outputDevice == deviceName_ || b.outputDevice == deviceMatch_;
 }
 
@@ -194,9 +194,10 @@ DWORD WINAPI MonitorOutput::thunk(LPVOID self) {
 }
 
 bool MonitorOutput::start(std::vector<Bus>* buses, const std::string& deviceMatch,
-                          std::string& err) {
+                          bool primary, std::string& err) {
     buses_ = buses;
     deviceMatch_ = deviceMatch;
+    primary_ = primary;
     stopEvt_  = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
     readyEvt_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
     thread_ = ::CreateThread(nullptr, 0, &MonitorOutput::thunk, this, 0, nullptr);

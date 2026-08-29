@@ -185,8 +185,10 @@ public:
     // empty means "use the system default". openmix's own virtual endpoints are
     // never selected, so the monitor mix cannot loop back into the engine.
     // `deviceMatch` is the device this output owns. It mixes the buses routed
-    // to it and leaves the rest to whichever output owns those.
-    bool start(std::vector<Bus>* buses, const std::string& deviceMatch, std::string& err);
+    // to it and leaves the rest to whichever output owns those. The primary
+    // output additionally carries every channel with no device of its own.
+    bool start(std::vector<Bus>* buses, const std::string& deviceMatch,
+               bool primary, std::string& err);
     // True when this output should carry a bus.
     bool owns(const Bus& b) const;
     void stop();
@@ -207,6 +209,8 @@ private:
     HANDLE readyEvt_ = nullptr;
     double bufferMs_ = 0.0;
     std::string deviceMatch_;
+    // The primary output carries every channel not routed elsewhere.
+    bool primary_ = true;
     std::string deviceName_;
     std::string startErr_;
     bool fellBack_ = false;

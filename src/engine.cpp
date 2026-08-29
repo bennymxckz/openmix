@@ -1,6 +1,7 @@
 #include "engine.h"
 
 #include <windows.h>
+#include <algorithm>
 #include <string>
 
 namespace {
@@ -68,7 +69,7 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
         b.micChain.prepare(kSampleRate);
     }
 
-    if (!out_.start(&buses_, cfg_.outMatch, err)) return false;
+    if (!rebuildOutputs(err)) return false;
 
     for (size_t i = 0; i < buses_.size(); ++i) {
         auto ep = std::make_unique<VirtualEndpoint>();
@@ -101,7 +102,8 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
     }
 
     if (!usbip_.start(&endpoints_, cfg_.port, err)) {
-        out_.stop();
+        for (auto& o : outputs_) o->stop();
+        outputs_.clear();
         return false;
     }
     if (cfg_.autoAttach) {
@@ -192,15 +194,62 @@ void Engine::renameEndpoints() {
     }
 }
 
+namespace {
+const std::string kEmpty;
+}  // namespace
+
+const std::string& Engine::monitorDevice() const {
+    return outputs_.empty() ? kEmpty : outputs_[0]->deviceName();
+}
+
+double Engine::monitorBufferMs() const {
+    return outputs_.empty() ? 0.0 : outputs_[0]->bufferMs();
+}
+
+// One output per distinct device. Channels routed nowhere in particular ride
+// on the primary, which is index 0.
+bool Engine::rebuildOutputs(std::string& err) {
+    for (auto& o : outputs_) o->stop();
+    outputs_.clear();
+
+    auto primary = std::make_unique<MonitorOutput>();
+    if (!primary->start(&buses_, cfg_.outMatch, true, err)) return false;
+    const std::string primaryName = primary->deviceName();
+    outputs_.push_back(std::move(primary));
+
+    // Anything a channel asks for that the primary is not already playing.
+    std::vector<std::string> extra;
+    for (const auto& b : buses_) {
+        if (b.outputDevice.empty() || b.outputDevice == primaryName) continue;
+        if (std::find(extra.begin(), extra.end(), b.outputDevice) == extra.end()) {
+            extra.push_back(b.outputDevice);
+        }
+    }
+    for (const auto& name : extra) {
+        auto o = std::make_unique<MonitorOutput>();
+        std::string ignored;
+        // A channel pointed at a device that has since gone away should not
+        // stop the rest of the mixer from starting.
+        if (o->start(&buses_, name, false, ignored)) outputs_.push_back(std::move(o));
+    }
+    return true;
+}
+
+bool Engine::setChannelDevice(size_t busIndex, const std::string& deviceName,
+                              std::string& err) {
+    if (!running_ || busIndex >= buses_.size()) return false;
+    buses_[busIndex].outputDevice = deviceName;
+    return rebuildOutputs(err);
+}
+
 bool Engine::setOutputDevice(const std::string& match, std::string& err) {
     if (!running_) return false;
-    out_.stop();
     cfg_.outMatch = match;
-    if (!out_.start(&buses_, cfg_.outMatch, err)) {
+    if (!rebuildOutputs(err)) {
         // Fall back to whatever Windows will give us rather than going silent.
         cfg_.outMatch.clear();
         std::string ignored;
-        out_.start(&buses_, cfg_.outMatch, ignored);
+        rebuildOutputs(ignored);
         return false;
     }
     return true;
@@ -238,7 +287,8 @@ void Engine::stop() {
     if (!running_) return;
     mic_.stop();
     usbip_.stop();     // dropping the connections unplugs the devices
-    out_.stop();
+    for (auto& o : outputs_) o->stop();
+    outputs_.clear();
     endpoints_.clear();
     buses_.clear();
     running_ = false;

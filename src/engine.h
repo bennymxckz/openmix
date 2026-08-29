@@ -32,7 +32,7 @@ public:
     std::vector<Bus>& buses() { return buses_; }
     const std::vector<std::unique_ptr<VirtualEndpoint>>& endpoints() const { return endpoints_; }
 
-    const std::string& monitorDevice() const { return out_.deviceName(); }
+    const std::string& monitorDevice() const;
     const std::string& micDevice() const { return micDeviceName_; }
     const std::string& micError() const { return micError_; }
     // False when Windows refused the endpoint rename, which needs admin.
@@ -42,7 +42,9 @@ public:
     bool usbipMissing() const { return usbipMissing_; }
     // True when devices were attached but Windows never enumerated them.
     bool devicesMissing() const;
-    double monitorBufferMs() const { return out_.bufferMs(); }
+    double monitorBufferMs() const;
+    // Route one channel to its own device, or to the primary when empty.
+    bool setChannelDevice(size_t busIndex, const std::string& deviceName, std::string& err);
     const EngineConfig& config() const { return cfg_; }
 
     // Swap the monitor output or microphone source while running. Only that
@@ -61,13 +63,16 @@ public:
 
 private:
     void attachAll();
+    bool rebuildOutputs(std::string& err);
     void renameEndpoints();
 
     EngineConfig cfg_;
     std::vector<Bus> buses_;
     std::vector<std::unique_ptr<VirtualEndpoint>> endpoints_;
     UsbipServer usbip_;
-    MonitorOutput out_;
+    // One per distinct output device in use; index 0 is the primary, which
+    // carries every channel that has not been routed elsewhere.
+    std::vector<std::unique_ptr<MonitorOutput>> outputs_;
     MicCapture mic_;
     std::string micDeviceName_;
     bool renamedOk_ = true;

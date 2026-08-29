@@ -424,7 +424,7 @@ int main(int argc, char** argv) {
 
     MonitorOutput out;
     std::string err;
-    if (!out.start(&buses, outMatch, err)) {
+    if (!out.start(&buses, outMatch, true, err)) {
         std::printf("monitor output failed: %s\n", err.c_str());
         return 1;
     }
