@@ -121,10 +121,14 @@ If old entries have accumulated from earlier versions, clear them with
 
 Clicking a channel opens its own page.
 
+- The channel's **level, mute, solo, meter and output device** repeated at the
+  top, so the page stands on its own.
 - **EQ**: high-pass and three parametric bands, with a response curve drawn
   from the coefficients actually in use.
-- **Presets**, saved by name and shared across channels, so a curve worked out
-  on the microphone can be dropped onto anything.
+- **Presets** — Voice, Footsteps, Bass boost, Clarity and Flat to start from,
+  plus your own saved by name. They are shared across channels, so a curve
+  worked out on the microphone can be dropped onto anything, and every one of
+  them stays editable once loaded.
 - **Ducking**: pull a channel down while you are talking, with the depth and
   the recovery time under your control, and a readout of the reduction being
   applied so it can be set against real speech. Sonar has no equivalent.

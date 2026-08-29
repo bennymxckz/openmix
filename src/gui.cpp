@@ -71,6 +71,9 @@ bool g_linkDevices = true;
 // -1 is the mixer; anything else is that channel's own page.
 int g_page = -1;
 char g_presetName[40] = {};
+// The preset each channel is showing, so the combo can say so rather than
+// asking every time. Empty means the curve has been edited since.
+std::vector<std::string> g_busPreset;
 
 // Defined further down, but used by the engine restart and shutdown paths
 // above them.
@@ -295,6 +298,9 @@ void saveSettings() {
         g_config.setBool(k + "mute", b.muted);
         g_config.setFloat(k + "monitor", b.monitorGain);
         g_config.set(k + "device", b.outputDevice);
+        g_config.set(k + "preset", &b - g_engine.buses().data() < static_cast<ptrdiff_t>(g_busPreset.size())
+                                   ? g_busPreset[&b - g_engine.buses().data()]
+                                   : std::string());
 
         const std::string e = k + "eq.";
         g_config.setBool(e + "on", b.eq.enabled);
@@ -338,6 +344,9 @@ void applySettings() {
         b.muted       = g_config.getBool(k + "mute", false);
         b.monitorGain = g_config.getFloat(k + "monitor", 0.0f);
         b.outputDevice = g_config.get(k + "device");
+        const size_t bi = static_cast<size_t>(&b - g_engine.buses().data());
+        if (g_busPreset.size() <= bi) g_busPreset.resize(bi + 1);
+        g_busPreset[bi] = g_config.get(k + "preset");
 
         const std::string m = k + "mix.";
         b.mix.mono          = g_config.getBool(m + "mono", false);
@@ -702,6 +711,9 @@ void drawEqCurve(const dsp::EqParams& p, ImVec2 size) {
 
 void drawEffects(Bus& b) {
     bool changed = false;
+    // Separate from `changed`: switching the equaliser on does not make the
+    // curve stop being the preset it came from, but moving a band does.
+    bool curveEdited = false;
 
     ImGui::PushFont(g_fontHead);
     ImGui::TextUnformatted("Equaliser");
@@ -713,7 +725,7 @@ void drawEffects(Bus& b) {
         const bool was = b.eq.enabled;
         b.eq = dsp::EqParams{};
         b.eq.enabled = was;
-        changed = true;
+        changed = curveEdited = true;
     }
     tip("Reset every band to no change");
 
@@ -728,13 +740,19 @@ void drawEffects(Bus& b) {
         ImGui::TableSetupColumn("freq");
         ImGui::TableSetupColumn("gain");
         ImGui::TableSetupColumn("q");
-        changed |= drawBand("High-pass", b.eq.hp, false);
-        changed |= drawBand("Low", b.eq.low, true);
-        changed |= drawBand("Mid", b.eq.mid, true);
-        changed |= drawBand("High", b.eq.high, true);
+        curveEdited |= drawBand("High-pass", b.eq.hp, false);
+        curveEdited |= drawBand("Low", b.eq.low, true);
+        curveEdited |= drawBand("Mid", b.eq.mid, true);
+        curveEdited |= drawBand("High", b.eq.high, true);
+        changed |= curveEdited;
         ImGui::EndTable();
     }
     ImGui::EndDisabled();
+
+    if (curveEdited && g_page >= 0 &&
+        static_cast<size_t>(g_page) < g_busPreset.size()) {
+        g_busPreset[g_page].clear();
+    }
 
     if (b.isCapture) {
         ImGui::Spacing();
@@ -1261,6 +1279,50 @@ void drawWelcome() {
 // preset.<name>.*, and shared across channels: a curve worth keeping for the
 // microphone is often worth trying on a game.
 
+// A few curves worth having before anyone has saved one. They are starting
+// points, not settings: everything stays editable once loaded, and saving over
+// one under a new name is the intended way to keep a tweak.
+struct Preset {
+    const char* name;
+    dsp::EqParams eq;
+};
+
+const Preset kBuiltIn[] = {
+    // Rolls off rumble, lifts presence, tames the boxy low mids. The usual
+    // shape for a voice that has to cut through a game.
+    {"Voice", {true, {90.0f, 0.0f, 0.707f, true},
+                     {250.0f, -3.0f, 0.9f, true},
+                     {2800.0f, 4.0f, 0.9f, true},
+                     {8000.0f, 3.0f, 0.707f, true}}},
+    // Footsteps and reloads live around 3-5 kHz; pulling the low end down
+    // stops explosions masking them.
+    {"Footsteps", {true, {120.0f, 0.0f, 0.707f, true},
+                         {180.0f, -6.0f, 0.707f, true},
+                         {4000.0f, 6.0f, 1.4f, true},
+                         {9000.0f, 2.0f, 0.707f, true}}},
+    {"Bass boost", {true, {20.0f, 0.0f, 0.707f, false},
+                          {110.0f, 6.0f, 0.707f, true},
+                          {1000.0f, 0.0f, 1.0f, false},
+                          {10000.0f, 1.0f, 0.707f, true}}},
+    // Small speakers and cheap headsets: less to fight in the low mids, more
+    // at the top so detail survives.
+    {"Clarity", {true, {60.0f, 0.0f, 0.707f, true},
+                       {350.0f, -4.0f, 1.0f, true},
+                       {1800.0f, 2.0f, 0.8f, true},
+                       {7000.0f, 4.0f, 0.707f, true}}},
+    {"Flat", {true, {80.0f, 0.0f, 0.707f, false},
+                    {200.0f, 0.0f, 0.707f, false},
+                    {1000.0f, 0.0f, 1.0f, false},
+                    {6000.0f, 0.0f, 0.707f, false}}},
+};
+
+const dsp::EqParams* builtInPreset(const std::string& name) {
+    for (const auto& p : kBuiltIn) {
+        if (name == p.name) return &p.eq;
+    }
+    return nullptr;
+}
+
 std::vector<std::string> presetNames() {
     std::vector<std::string> out;
     for (const auto& key : g_config.keys()) {
@@ -1288,6 +1350,11 @@ void savePreset(const std::string& name, const dsp::EqParams& eq) {
 }
 
 void loadPreset(const std::string& name, dsp::EqParams& eq) {
+    if (const dsp::EqParams* built = builtInPreset(name)) {
+        eq = *built;
+        eq.enabled = true;
+        return;
+    }
     const std::string k = "preset." + name + ".";
     dsp::Band* bands[4] = { &eq.hp, &eq.low, &eq.mid, &eq.high };
     const char* names[4] = { "hp", "low", "mid", "high" };
@@ -1396,7 +1463,71 @@ void drawChannelPage(size_t index, Bus& b) {
     mix::textDim("Openmix - %s", b.name.c_str());
     ImGui::PopFont();
 
-    ImGui::Spacing();
+    ImGui::Dummy(ImVec2(0, 6.0f * g_scale));
+
+    // ---- level, mute and destination, so the page stands on its own ----
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::toVec(theme::kPanel));
+    ImGui::BeginChild("head", ImVec2(0, 0),
+                      ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
+
+    if (mix::pillButton(b.muted ? "MUTED" : "MUTE", b.muted,
+                        ImVec2(58.0f * g_scale, 26.0f * g_scale), theme::kMuted)) {
+        b.muted = !b.muted;
+        saveSettings();
+    }
+    tip("Silence this channel everywhere");
+
+    ImGui::SameLine(0.0f, 6.0f * g_scale);
+    if (mix::pillButton("S", b.soloed,
+                        ImVec2(28.0f * g_scale, 26.0f * g_scale), theme::kAccent)) {
+        b.soloed = !b.soloed;
+    }
+    tip("Hear only the soloed channels. Does not affect the stream.");
+
+    ImGui::SameLine(0.0f, 12.0f * g_scale);
+    float percent = percentFromGain(b.gain);
+    ImGui::SetNextItemWidth(-260.0f * g_scale);
+    if (ImGui::SliderFloat("##level", &percent, 0.0f, 100.0f, "%.0f%%")) {
+        b.gain = gainFromPercent(percent);
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit()) saveSettings();
+    tip(b.isCapture ? "How loud applications hear you" : "How loud this channel is");
+
+    // Where this channel is heard. The microphone has no output of its own.
+    ImGui::SameLine(0.0f, 12.0f * g_scale);
+    if (!b.isCapture) {
+        const std::string current = b.outputDevice.empty() ? g_engine.monitorDevice()
+                                                           : b.outputDevice;
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::BeginCombo("##pagedev", shortDeviceName(current).c_str())) {
+            for (const auto& d : g_outDevices) {
+                if (d.isOpenmix) continue;   // routing a channel into itself
+                if (ImGui::Selectable(d.name.c_str(), d.name == current)) {
+                    routeChannel(index, d.name);
+                }
+            }
+            ImGui::EndCombo();
+        }
+        tip(g_linkDevices ? "Output device. Channels are linked, so this moves them all."
+                          : "Output device for this channel only.");
+    } else {
+        ImGui::PushFont(g_fontSmall);
+        ImGui::AlignTextToFramePadding();
+        mix::textDim("%s", g_engine.micDevice().empty() ? "no microphone"
+                                                        : g_engine.micDevice().c_str());
+        ImGui::PopFont();
+    }
+
+    ImGui::Dummy(ImVec2(0, 2.0f * g_scale));
+    if (g_meters.size() <= index) g_meters.resize(index + 1);
+    mix::horizontalMeter(g_meters[index], b.ring.takePeak(),
+                         ImGui::GetIO().DeltaTime,
+                         ImVec2(ImGui::GetContentRegionAvail().x, 8.0f * g_scale));
+
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+
+    ImGui::Dummy(ImVec2(0, 10.0f * g_scale));
 
     // ---- presets ----
     ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::toVec(theme::kPanel));
@@ -1406,34 +1537,60 @@ void drawChannelPage(size_t index, Bus& b) {
     mix::textDim("PRESET");
     ImGui::PopFont();
 
-    const auto names = presetNames();
+    if (g_busPreset.size() <= index) g_busPreset.resize(index + 1);
+    std::string& shown = g_busPreset[index];
+    const auto saved = presetNames();
+
     ImGui::SetNextItemWidth(220.0f * g_scale);
-    if (ImGui::BeginCombo("##preset", names.empty() ? "(none saved)" : "Load a preset")) {
-        for (const auto& n : names) {
-            if (ImGui::Selectable(n.c_str())) {
-                loadPreset(n, b.eq);
+    if (ImGui::BeginCombo("##preset", shown.empty() ? "Custom" : shown.c_str())) {
+        for (const auto& p : kBuiltIn) {
+            if (ImGui::Selectable(p.name, shown == p.name)) {
+                loadPreset(p.name, b.eq);
+                shown = p.name;
                 saveSettings();
             }
-            if (ImGui::BeginPopupContextItem()) {
-                if (ImGui::MenuItem("Delete")) deletePreset(n);
-                ImGui::EndPopup();
+        }
+        if (!saved.empty()) {
+            ImGui::Separator();
+            for (const auto& n : saved) {
+                if (ImGui::Selectable(n.c_str(), shown == n)) {
+                    loadPreset(n, b.eq);
+                    shown = n;
+                    saveSettings();
+                }
             }
         }
         ImGui::EndCombo();
     }
-    tip("Right-click a preset to delete it");
+    tip("Built-in curves first, then your own. All of them stay editable.");
 
-    ImGui::SameLine();
+    // Deleting is only offered for a preset of the user's own that is actually
+    // loaded, so there is never a list of trash icons to misclick.
+    const bool ownPreset =
+        !shown.empty() && !builtInPreset(shown) &&
+        std::find(saved.begin(), saved.end(), shown) != saved.end();
+    if (ownPreset) {
+        ImGui::SameLine();
+        if (ImGui::Button("Delete")) {
+            deletePreset(shown);
+            shown.clear();
+        }
+        tip("Remove this preset. The curve stays where it is.");
+    }
+
+    ImGui::SameLine(0.0f, 16.0f * g_scale);
     ImGui::SetNextItemWidth(160.0f * g_scale);
-    const bool enter = ImGui::InputTextWithHint("##pname", "Name this curve",
+    const bool enter = ImGui::InputTextWithHint("##pname", "Save as...",
                                                 g_presetName, sizeof(g_presetName),
                                                 ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
     if ((ImGui::Button("Save") || enter) && g_presetName[0] != 0) {
         savePreset(g_presetName, b.eq);
+        shown = g_presetName;
         g_presetName[0] = 0;
     }
-    tip("Presets are shared across channels");
+    tip("Presets are shared across channels, so a curve set up here can be\n"
+        "dropped onto any of them");
     ImGui::EndChild();
     ImGui::PopStyleColor();
 

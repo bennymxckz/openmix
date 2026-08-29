@@ -93,6 +93,59 @@ inline void verticalMeter(MeterState& m, float peak, float dt, ImVec2 size) {
     ImGui::Dummy(size);
 }
 
+// The same meter lying down, for a channel's own page where the level belongs
+// in the header rather than beside a fader. Shares MeterState with the
+// vertical one -- only one of the two views is on screen at a time.
+inline void horizontalMeter(MeterState& m, float peak, float dt, ImVec2 size) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float right = p.x + size.x;
+
+    if (peak >= 0.999f) m.clipAge = 0.0f; else m.clipAge += dt;
+
+    const float pos = meterPosition(peak);
+    m.level = pos > m.level ? pos : (std::max)(pos, m.level - dt * 0.75f);
+    if (pos >= m.hold) {
+        m.hold = pos;
+        m.holdAge = 0.0f;
+    } else {
+        m.holdAge += dt;
+        if (m.holdAge > 1.2f) m.hold = (std::max)(pos, m.hold - dt * 0.5f);
+    }
+
+    dl->AddRectFilled(p, ImVec2(right, p.y + size.y), theme::kMeterBg, 2.0f);
+
+    if (m.level > 0.001f) {
+        const float xEnd = p.x + size.x * m.level;
+        const float warnX = p.x + size.x * 0.82f;
+        const float hotX  = p.x + size.x * 0.94f;
+
+        dl->AddRectFilled(p, ImVec2((std::min)(xEnd, warnX), p.y + size.y),
+                          theme::kMeterOk, 2.0f);
+        if (xEnd > warnX) {
+            dl->AddRectFilled(ImVec2(warnX, p.y), ImVec2((std::min)(xEnd, hotX), p.y + size.y),
+                              theme::kMeterWarn);
+        }
+        if (xEnd > hotX) {
+            dl->AddRectFilled(ImVec2(hotX, p.y), ImVec2(xEnd, p.y + size.y),
+                              theme::kMeterHot, 2.0f);
+        }
+    }
+
+    if (m.hold > 0.01f) {
+        const float x = p.x + size.x * m.hold;
+        dl->AddRectFilled(ImVec2(x - 1.0f, p.y), ImVec2(x + 1.0f, p.y + size.y),
+                          theme::fade(theme::kText, 0.75f));
+    }
+
+    if (m.clipAge < 2.0f) {
+        dl->AddRectFilled(ImVec2(right - 3.0f, p.y), ImVec2(right, p.y + size.y),
+                          theme::kMeterHot);
+    }
+
+    ImGui::Dummy(size);
+}
+
 // A vertical fader over 0..100%. Returns true while being changed.
 // Double-click resets to full, the one value anyone returns to exactly.
 inline bool verticalFader(const char* id, float* percent, ImVec2 size, ImU32 accent,
