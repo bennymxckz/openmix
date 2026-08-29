@@ -54,6 +54,8 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
     for (const auto& name : cfg_.playbackBuses) {
         Bus b;
         b.name = name;
+        b.streamReturn = std::find(cfg_.noStreamReturn.begin(), cfg_.noStreamReturn.end(),
+                                   name) == cfg_.noStreamReturn.end();
         buses_.push_back(std::move(b));
     }
     if (cfg_.enableMic) {
@@ -76,10 +78,16 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
     for (size_t i = 0; i < buses_.size(); ++i) {
         auto ep = std::make_unique<VirtualEndpoint>();
         const bool cap = buses_[i].isCapture;
+        // A playback channel is duplex only when it is meant to be recorded.
+        // Without that, its capture side is a device in everyone's microphone
+        // list that nothing ever opens.
+        const bool duplex = !cap && buses_[i].streamReturn;
         ep->device = std::make_unique<usbaudio::Device>(
             "Openmix - " + buses_[i].name,   // shown to the user
             buses_[i].name,                  // identity, stable across renames
-            cap ? usbaudio::Direction::Capture : usbaudio::Direction::Duplex);
+            cap      ? usbaudio::Direction::Capture
+            : duplex ? usbaudio::Direction::Duplex
+                     : usbaudio::Direction::Playback);
         if (cap) {
             ep->source = &buses_[i].ring;
             // The stream fader is how loud applications hear the microphone;
@@ -89,11 +97,13 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
             ep->streamGain  = &buses_[i].gain;
             ep->streamMuted = &buses_[i].muted;
         } else {
-            // Playback channels are duplex: applications render in, OBS
-            // records the same audio back out at its own level.
+            // A recorded playback channel is duplex: applications render in,
+            // OBS reads the processed result back out.
             ep->sink        = &buses_[i].ring;
-            ep->streamTap   = &buses_[i].stream;
-            ep->source      = &buses_[i].stream;
+            if (duplex) {
+                ep->streamTap = &buses_[i].stream;
+                ep->source    = &buses_[i].stream;
+            }
             ep->streamGain  = &buses_[i].gain;
             ep->streamMuted = &buses_[i].muted;
             ep->eq          = &buses_[i].eq;
@@ -184,19 +194,37 @@ void Engine::renameEndpoints() {
         return w;
     };
 
-    std::vector<RenderDevice> all = listRenderDevices();
-    const std::vector<RenderDevice> caps = listCaptureDevices();
-    all.insert(all.end(), caps.begin(), caps.end());
+    const std::vector<RenderDevice> renders = listRenderDevices();
+    const std::vector<RenderDevice> captures = listCaptureDevices();
+
+    // Windows wraps our product string, e.g. "Speakers (Openmix - Game)". Find
+    // the endpoint carrying `product` in the given list and give it `want`.
+    auto rename = [&](const std::vector<RenderDevice>& list,
+                      const std::string& product, const std::string& want) {
+        for (const auto& d : list) {
+            if (d.name == want) return;                       // already correct
+            if (d.name.find(product) == std::string::npos) continue;
+            if (!renameEndpoint(d.id, widen(want))) renamedOk_ = false;
+            return;
+        }
+    };
 
     renamedOk_ = true;
     for (const auto& ep : endpoints_) {
-        const std::string want = ep->device->productName();   // "Openmix - Game"
-        for (const auto& d : all) {
-            // Windows wraps our product string, e.g. "Speakers (Openmix - Game)".
-            if (d.name == want) break;                        // already correct
-            if (d.name.find(want) == std::string::npos) continue;
-            if (!renameEndpoint(d.id, widen(want))) renamedOk_ = false;
-            break;
+        const std::string product = ep->device->productName();   // "Openmix - Game"
+        const usbaudio::Direction dir = ep->device->direction();
+
+        // A duplex channel owns two endpoints, and the old loop stopped after
+        // the first -- which is why the capture side kept sitting in every
+        // microphone list still called "Microphone (Openmix - Game)".
+        if (dir != usbaudio::Direction::Capture) {
+            rename(renders, product, product);
+        }
+        if (dir != usbaudio::Direction::Playback) {
+            // The stream return is not a microphone and should not read as
+            // one. The microphone channel itself keeps the plain name.
+            const bool isMic = (dir == usbaudio::Direction::Capture);
+            rename(captures, product, isMic ? product : product + " (stream)");
         }
     }
 }

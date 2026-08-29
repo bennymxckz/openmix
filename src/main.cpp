@@ -20,6 +20,7 @@
 #include <timeapi.h>
 #include <cstdio>
 #include <cwctype>
+#include <set>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -123,31 +124,52 @@ int fixNames() {
         return w;
     };
 
-    std::vector<RenderDevice> all = listRenderDevices();
-    const std::vector<RenderDevice> caps = listCaptureDevices();
-    all.insert(all.end(), caps.begin(), caps.end());
+    // The channel an endpoint belongs to, dug out of whatever Windows wrapped
+    // it in: "Microphone (Openmix - Game)" and "Openmix - Game (stream)" both
+    // give back "Openmix - Game".
+    auto product = [](const std::string& name) -> std::string {
+        const size_t at = name.find("Openmix - ");
+        if (at == std::string::npos) return {};
+        std::string p = name.substr(at);
+        while (!p.empty() && (p.back() == ')' || p.back() == ' ')) p.pop_back();
+        const size_t dup = p.find(" (");
+        if (dup != std::string::npos) p = p.substr(0, dup);
+        return p;
+    };
+
+    const std::vector<RenderDevice> renders = listRenderDevices();
+    const std::vector<RenderDevice> captures = listCaptureDevices();
+
+    // A channel that plays as well as records is a mixer channel, and its
+    // capture side is a stream return, not a microphone. A channel that only
+    // records is the microphone itself and keeps the plain name.
+    std::set<std::string> playbackChannels;
+    for (const auto& d : renders) {
+        const std::string p = product(d.name);
+        if (!p.empty()) playbackChannels.insert(p);
+    }
 
     int fixed = 0, failed = 0, already = 0;
-    for (const auto& d : all) {
-        const size_t at = d.name.find("Openmix - ");
-        if (at == std::string::npos) continue;
+    auto apply = [&](const std::vector<RenderDevice>& list, bool capture) {
+        for (const auto& d : list) {
+            const std::string p = product(d.name);
+            if (p.empty()) continue;
 
-        std::string want = d.name.substr(at);
-        while (!want.empty() && (want.back() == ')' || want.back() == ' ')) want.pop_back();
-        // "Openmix - Mic (Openmix - Mic)" collapses to the first occurrence.
-        const size_t dup = want.find(" (");
-        if (dup != std::string::npos) want = want.substr(0, dup);
+            const std::string want =
+                (capture && playbackChannels.count(p)) ? p + " (stream)" : p;
+            if (d.name == want) { ++already; continue; }
 
-        if (d.name == want) { ++already; continue; }
-
-        if (renameEndpoint(d.id, widen(want))) {
-            std::printf("  %-34s -> %s\n", d.name.c_str(), want.c_str());
-            ++fixed;
-        } else {
-            std::printf("  %-34s FAILED (run as administrator)\n", d.name.c_str());
-            ++failed;
+            if (renameEndpoint(d.id, widen(want))) {
+                std::printf("  %-34s -> %s\n", d.name.c_str(), want.c_str());
+                ++fixed;
+            } else {
+                std::printf("  %-34s FAILED (run as administrator)\n", d.name.c_str());
+                ++failed;
+            }
         }
-    }
+    };
+    apply(renders, false);
+    apply(captures, true);
 
     if (!fixed && !failed && !already) {
         std::printf("No openmix endpoints found. Start openmix first, then run this.\n");
@@ -393,6 +415,7 @@ int main(int argc, char** argv) {
         rc |= runDynamicsTest();
         rc |= runMixTest();
         rc |= runDenoiseTest();
+        rc |= runDescriptorTest();
         ::CoUninitialize();
         return rc;
     }

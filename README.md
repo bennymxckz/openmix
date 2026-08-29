@@ -92,6 +92,25 @@ Closing or minimising the window parks openmix in the tray with audio still
 running. Left-click the tray icon to show or hide it, right-click for Quit.
 While hidden it stops rendering entirely, so an idle mixer costs nothing.
 
+### Why there is more than one Openmix microphone
+
+Each channel you record publishes a **second, capture device** — that is what
+OBS opens to take Game, Chat and Media on separate tracks, and it carries the
+processed audio rather than the raw stream a loopback would give you. The cost
+is that a capture device shows up in every microphone list, Discord's
+included.
+
+Two things keep that tidy:
+
+- **Settings → Channels** has a **Record** tick per channel. Turn it off for
+  anything you do not record and its capture device stops existing. A channel
+  with it off is playback-only.
+- **Fix names** labels the ones you keep `Openmix - Game (stream)` rather than
+  `Microphone (Openmix - Game)`, so nothing reads as a microphone that is not
+  one. Only **Openmix - Mic** is a microphone.
+
+Turn Record off everywhere and openmix publishes exactly one microphone.
+
 ### Device names
 
 Windows composes USB audio endpoint names as `<terminal type> (<product>)`
@@ -112,7 +131,8 @@ If old entries have accumulated from earlier versions, clear them with
 **Mixing**
 
 - Four channels by default, and the set is editable — Sonar's are fixed.
-  Each channel becomes its own pair of Windows devices.
+  Each channel becomes a Windows playback device, plus a capture device when
+  you want OBS to record it separately.
 - One fader per channel, in **percent**, so the whole travel is usable. A dB
   fader spends most of its length on levels nobody wants.
 - **Its own output device per channel**, or one for all of them — the Link
@@ -180,6 +200,13 @@ build\openmix-cli.exe --dsptest     filter and dynamics response, offline
 build\openmix-cli.exe --selftest    round trip through a live channel
 build\openmix-cli.exe --selftest Game 60   ...for longer, to catch drift
 ```
+
+`--dsptest` also walks the USB descriptors for every channel shape — playback
+only, capture only and duplex — checking lengths, interface counts, terminal
+counts and endpoint directions against what each is supposed to be. A
+malformed descriptor does not fail loudly; Windows either refuses the device
+or enumerates something subtly wrong, and the only symptom is a channel that
+never appears.
 
 `--dsptest` is pure arithmetic — no devices, no audio hardware — so it runs in
 CI on every push. It checks the real frequency response of every filter, the

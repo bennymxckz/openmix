@@ -79,6 +79,10 @@ struct Bus {
     // Where this channel is heard. Empty means the shared default, which is
     // what "linked" leaves every channel on.
     std::string outputDevice;
+    // Whether this channel also publishes a capture device, so OBS can
+    // record it on its own track. Playback channels only; the microphone
+    // is a capture device by definition.
+    bool streamReturn = true;
     // Solo affects monitoring only. It is a way to check one channel, not a
     // way to change what the stream receives, and it is deliberately not
     // persisted -- coming back to a silent mixer would be baffling.
@@ -139,6 +143,7 @@ int runSelfTest(const std::string& channel, int seconds);
 int runDspTest();
 int runMixTest();
 int runDenoiseTest();
+int runDescriptorTest();
 
 // Windows keeps separate default endpoints per role: Console (0), Multimedia
 // (1) and Communications (2). Chat applications follow Communications, which

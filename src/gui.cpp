@@ -497,11 +497,28 @@ void routeChannel(size_t index, const std::string& device) {
     saveSettings();
 }
 
+// Whether a channel also publishes a capture device for OBS. Default on: the
+// separate tracks are what the channels exist for, and a setting that silently
+// turned them off would break a recording nobody was watching.
+bool channelRecords(const std::string& name) {
+    return g_config.getBool("bus." + name + ".record", true);
+}
+
+// The channels that have opted out, in the form the engine wants.
+std::vector<std::string> channelsNotRecorded() {
+    std::vector<std::string> out;
+    for (const auto& name : g_channels) {
+        if (!channelRecords(name)) out.push_back(name);
+    }
+    return out;
+}
+
 void restartEngine() {
     saveSettings();
     g_engine.stop();
     EngineConfig cfg;
     cfg.playbackBuses = g_channels;
+    cfg.noStreamReturn = channelsNotRecorded();
     cfg.outMatch = g_config.get("output");
     cfg.micMatch = g_config.get("mic");
     g_startError.clear();
@@ -1160,7 +1177,17 @@ void deleteProfile(const std::string& name) {
 void drawSettings() {
     beginCard("Channels", "Each one becomes a device applications can select.");
 
+    ImGui::PushFont(g_fontSmall);
+    mix::textDim("Record publishes a second, capture device for the channel so OBS can\n"
+                 "take it on its own track. Those show up in every microphone list, so\n"
+                 "turn it off for channels you do not record.");
+    ImGui::PopFont();
+    ImGui::Spacing();
+
     int removeAt = -1;
+    // Restarting the engine reseats every bus, so it waits until the loop that
+    // is walking them is done -- the same reason Remove defers.
+    bool republish = false;
     for (size_t i = 0; i < g_channels.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
         ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -1171,7 +1198,25 @@ void drawSettings() {
         ImGui::SameLine();
         ImGui::AlignTextToFramePadding();
         ImGui::Text("Openmix - %s", g_channels[i].c_str());
-        ImGui::SameLine(250.0f * g_scale);
+
+        ImGui::SameLine(210.0f * g_scale);
+        bool rec = channelRecords(g_channels[i]);
+        if (ImGui::Checkbox("Record", &rec)) {
+            g_config.setBool("bus." + g_channels[i] + ".record", rec);
+            // The capture side is a USB interface, so it can only appear or
+            // disappear when the device is republished.
+            republish = true;
+        }
+        {
+            char t[160];
+            std::snprintf(t, sizeof(t),
+                          "Publishes \"Openmix - %s (stream)\" for OBS to record.\n"
+                          "Turning it off is what removes it from microphone lists.",
+                          g_channels[i].c_str());
+            tip(t);
+        }
+
+        ImGui::SameLine(320.0f * g_scale);
         ImGui::BeginDisabled(g_channels.size() <= 1);
         if (ImGui::SmallButton("Remove")) removeAt = static_cast<int>(i);
         ImGui::EndDisabled();
@@ -1189,11 +1234,11 @@ void drawSettings() {
         ImGui::SameLine();
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Openmix - Mic");
-        ImGui::SameLine(250.0f * g_scale);
+        ImGui::SameLine(210.0f * g_scale);
         ImGui::PushFont(g_fontSmall);
         ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(theme::kTextFaint));
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("always present");
+        ImGui::TextUnformatted("the microphone, always present");
         ImGui::PopStyleColor();
         ImGui::PopFont();
     }
@@ -1257,6 +1302,8 @@ void drawSettings() {
     if (removeAt >= 0) {
         g_channels.erase(g_channels.begin() + removeAt);
         g_config.set("channels", joinChannels(g_channels));
+        restartEngine();
+    } else if (republish) {
         restartEngine();
     }
 
@@ -2158,6 +2205,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
 
     EngineConfig cfg;
     cfg.playbackBuses = g_channels;
+    cfg.noStreamReturn = channelsNotRecorded();
     cfg.outMatch = g_config.get("output");
     cfg.micMatch = g_config.get("mic");
     if (g_engine.start(cfg, g_startError)) applySettings();

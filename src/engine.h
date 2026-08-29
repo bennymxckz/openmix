@@ -14,6 +14,10 @@
 
 struct EngineConfig {
     std::vector<std::string> playbackBuses{"Game", "Chat", "Media"};
+    // Playback channels that should not publish a capture device. Named
+    // rather than flagged so the default -- every channel recordable --
+    // needs no configuration at all.
+    std::vector<std::string> noStreamReturn;
     bool enableMic = true;
     std::string micBusName = "Mic";
     std::string outMatch;    // substring of the monitor output device name

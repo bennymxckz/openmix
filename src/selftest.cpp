@@ -8,6 +8,7 @@
 
 #include "audio.h"
 #include "denoise.h"
+#include "usb_audio.h"
 #include "dsp.h"
 #include "dynamics.h"
 
@@ -784,4 +785,155 @@ int runDenoiseTest() {
 
     std::printf("\n%s\n", ok ? "PASS - all noise suppression checks" : "FAIL");
     return ok ? 0 : 1;
+}
+
+// ---------------------------------------------------------------------------
+// USB descriptors.
+//
+// A malformed descriptor does not fail loudly. Windows either refuses the
+// device with a code 10 or, worse, enumerates something subtly wrong, and the
+// only symptom is a channel that never appears. Walking the bytes here is far
+// cheaper than attaching hardware to find out.
+
+namespace {
+
+struct DescCheck {
+    bool ok = true;
+    void say(const char* what, bool good) {
+        std::printf("  %-44s %s\n", what, good ? "PASS" : "FAIL");
+        ok &= good;
+    }
+    void say(const char* what, long got, long want) {
+        const bool good = got == want;
+        std::printf("  %-44s %4ld (want %ld)  %s\n", what, got, want,
+                    good ? "PASS" : "FAIL");
+        ok &= good;
+    }
+};
+
+// What a walk of the configuration descriptor found.
+struct Walk {
+    bool clean = false;          // every bLength landed exactly on the end
+    long declaredTotal = 0;
+    long actualTotal = 0;
+    long interfaces = 0;         // alt-setting 0 descriptors, i.e. real interfaces
+    long altSettings = 0;
+    long endpoints = 0;
+    long acHeaderTotal = 0;      // wTotalLength the control header claims
+    long acClassBytes = 0;       // class-specific bytes that actually follow it
+    bool sawEpOut = false;
+    bool sawEpIn = false;
+    long inputTerminals = 0;
+    long outputTerminals = 0;
+};
+
+Walk walkConfig(const std::vector<uint8_t>& d) {
+    Walk w;
+    w.actualTotal = static_cast<long>(d.size());
+    if (d.size() < 9) return w;
+    w.declaredTotal = d[2] | (d[3] << 8);
+
+    size_t i = 0;
+    bool inAudioControl = false;
+    while (i + 1 < d.size()) {
+        const size_t len = d[i];
+        const uint8_t type = d[i + 1];
+        if (len == 0 || i + len > d.size()) return w;   // clean stays false
+
+        if (type == 0x04) {                              // interface
+            const uint8_t alt = d[i + 3];
+            const uint8_t subclass = d[i + 6];
+            if (alt == 0) ++w.interfaces; else ++w.altSettings;
+            inAudioControl = (subclass == 0x01);         // AUDIOCONTROL
+        } else if (type == 0x05) {                       // endpoint
+            ++w.endpoints;
+            if (d[i + 2] == 0x01) w.sawEpOut = true;
+            if (d[i + 2] == 0x82) w.sawEpIn = true;
+        } else if (type == 0x24) {                       // class-specific interface
+            if (inAudioControl) {
+                const uint8_t sub = d[i + 2];
+                if (sub == 0x01) {                       // header
+                    w.acHeaderTotal = d[i + 5] | (d[i + 6] << 8);
+                    w.acClassBytes = static_cast<long>(len);
+                } else {
+                    w.acClassBytes += static_cast<long>(len);
+                    if (sub == 0x02) ++w.inputTerminals;
+                    if (sub == 0x03) ++w.outputTerminals;
+                }
+            }
+        }
+        i += len;
+    }
+    w.clean = (i == d.size());
+    return w;
+}
+
+}  // namespace
+
+int runDescriptorTest() {
+    std::printf("\nUSB descriptors\n\n");
+    DescCheck c;
+
+    struct Case {
+        const char* label;
+        usbaudio::Direction dir;
+        long interfaces;      // control + streaming
+        bool epOut, epIn;
+        long inTerminals, outTerminals;
+    };
+    const Case cases[] = {
+        // A playback-only channel has one streaming interface and no capture
+        // endpoint, which is what keeps it out of every microphone list.
+        {"playback", usbaudio::Direction::Playback, 2, true,  false, 1, 1},
+        {"capture",  usbaudio::Direction::Capture,  2, false, true,  1, 1},
+        {"duplex",   usbaudio::Direction::Duplex,   3, true,  true,  2, 2},
+    };
+
+    for (const auto& k : cases) {
+        usbaudio::Device dev("Openmix - Test", "Test", k.dir);
+        const Walk w = walkConfig(dev.configDescriptor());
+
+        char what[80];
+        std::snprintf(what, sizeof(what), "%s: descriptor walk lands on the end", k.label);
+        c.say(what, w.clean);
+
+        std::snprintf(what, sizeof(what), "%s: wTotalLength matches the bytes", k.label);
+        c.say(what, w.declaredTotal, w.actualTotal);
+
+        std::snprintf(what, sizeof(what), "%s: interface count", k.label);
+        c.say(what, w.interfaces, k.interfaces);
+
+        std::snprintf(what, sizeof(what), "%s: bNumInterfaces agrees", k.label);
+        c.say(what, static_cast<long>(dev.configDescriptor()[4]), k.interfaces);
+
+        std::snprintf(what, sizeof(what), "%s: control header wTotalLength", k.label);
+        c.say(what, w.acHeaderTotal, w.acClassBytes);
+
+        std::snprintf(what, sizeof(what), "%s: terminals in and out", k.label);
+        c.say(what, w.inputTerminals == k.inTerminals && w.outputTerminals == k.outTerminals);
+
+        std::snprintf(what, sizeof(what), "%s: playback endpoint present", k.label);
+        c.say(what, w.sawEpOut == k.epOut);
+
+        std::snprintf(what, sizeof(what), "%s: capture endpoint present", k.label);
+        c.say(what, w.sawEpIn == k.epIn);
+
+        // Every streaming interface carries a zero-bandwidth alt 0 and one
+        // alt 1, so the host can idle the stream without detaching.
+        std::snprintf(what, sizeof(what), "%s: one alt setting per stream", k.label);
+        c.say(what, w.altSettings, k.interfaces - 1);
+    }
+
+    {
+        // Identity has to come from the key, not the display name, or renaming
+        // a channel makes Windows register brand-new hardware.
+        usbaudio::Device a("Openmix - Game", "Game", usbaudio::Direction::Duplex);
+        usbaudio::Device b("Something Else", "Game", usbaudio::Direction::Playback);
+        usbaudio::Device d("Openmix - Game", "Chat", usbaudio::Direction::Duplex);
+        c.say("renaming a channel keeps its product id", a.productId() == b.productId());
+        c.say("different channels get different ids", a.productId() != d.productId());
+    }
+
+    std::printf("\n%s\n", c.ok ? "PASS - all descriptor checks" : "FAIL");
+    return c.ok ? 0 : 1;
 }
