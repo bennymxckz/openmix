@@ -102,6 +102,11 @@ void MicCapture::setActivity(std::atomic<float>* activity) {
     activity_ = activity;
 }
 
+void MicCapture::setDenoise(dsp::DenoiseParams* p, dsp::NoiseSuppressor* ns) {
+    denoise_ = p;
+    denoiser_ = ns;
+}
+
 // How open the microphone is, 0..1, for channels that duck under it.
 //
 // Deliberately not the gate's own gain: ducking has to work whether or not the
@@ -322,10 +327,16 @@ bool MicCapture::captureOnce() {
                     const bool wantEq = eq_ && strip_ && eq_->enabled;
                     const bool wantDyn = mic_ && micChain_ &&
                                          (mic_->gate.enabled || mic_->comp.enabled);
-                    if (wantEq || wantDyn) {
+                    const bool wantNr = denoise_ && denoiser_ && denoise_->enabled;
+                    if (wantEq || wantDyn || wantNr) {
                         if (work.size() < samples) work.resize(samples);
                         std::memcpy(work.data(), src, samples * sizeof(float));
-                        // EQ first: the gate and compressor should react to the
+                        // Noise suppression first, so its estimate of the room
+                        // is made from what the microphone actually heard
+                        // rather than from a spectrum the equaliser has
+                        // already reshaped.
+                        if (wantNr) denoiser_->process(*denoise_, work.data(), frames, kChannels);
+                        // Then EQ: the gate and compressor should react to the
                         // corrected signal, not to rumble the high-pass is
                         // about to remove.
                         if (wantEq) strip_->process(*eq_, work.data(), frames, kChannels);

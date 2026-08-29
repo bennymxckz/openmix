@@ -140,6 +140,10 @@ Clicking a channel opens its own page.
 - **Balance**, **mono** fold-down, and a **delay** up to 250 ms for lining a
   channel up against video that arrives late.
 - A **limiter** per channel, so one loud moment cannot clip the recording.
+- **Noise suppression** on the microphone: a short-time Fourier transform with
+  Wiener gains and a minimum-statistics noise estimate, so a fan or a keyboard
+  comes out from *under* your voice rather than only between words, which is
+  all a gate can do. Costs 11 ms of delay while it is switched on.
 - Microphone noise gate and compressor, applied on the way in so the virtual
   microphone and your own monitoring agree.
 - Microphone self-monitoring, silent by default and levelled separately from
@@ -177,8 +181,11 @@ build\openmix-cli.exe --selftest Game 60   ...for longer, to catch drift
 
 `--dsptest` is pure arithmetic — no devices, no audio hardware — so it runs in
 CI on every push. It checks the real frequency response of every filter, the
-gain reduction of the gate and compressor, and the balance, mono fold, delay,
-limiter ceiling and duck depth, all against theory.
+gain reduction of the gate and compressor, the balance, mono fold, delay,
+limiter ceiling and duck depth, and — for the noise suppressor — how far a
+steady noise floor comes down, how little speech-like audio loses, how much
+the ratio between them improves, and that the overlap-add really does lag by
+exactly one window.
 
 `--selftest` plays a tone into a channel's playback side and records it from
 the same channel's capture side, then reports frame rate against real time,

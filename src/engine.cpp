@@ -67,6 +67,7 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
         b.stream.reset(kSampleRate / 4, kChannels);   // stream send, or mic monitor
         b.strip.prepare(kSampleRate);
         b.micChain.prepare(kSampleRate);
+        b.denoiser.prepare(kSampleRate);
         b.mixChain.prepare(kSampleRate);
     }
 
@@ -122,6 +123,7 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
             mic_.setEq(&b.eq, &b.strip);
             mic_.setDynamics(&b.mic, &b.micChain);
             mic_.setActivity(&micActivity_);
+            mic_.setDenoise(&b.denoise, &b.denoiser);
             mic_.setMonitor(&b.stream);
             // Self-monitoring starts silent -- monitorGain, not gain: hearing
             // your own voice unasked is startling and on speakers it feeds
@@ -269,6 +271,7 @@ bool Engine::setMicDevice(const std::string& match, std::string& err) {
             mic_.setEq(&b.eq, &b.strip);
             mic_.setDynamics(&b.mic, &b.micChain);
             mic_.setActivity(&micActivity_);
+            mic_.setDenoise(&b.denoise, &b.denoiser);
             mic_.setMonitor(&b.stream);
             break;
         }

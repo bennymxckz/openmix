@@ -6,6 +6,7 @@
 #include <memory>
 #include "ring.h"
 #include "dsp.h"
+#include "denoise.h"
 #include "dynamics.h"
 
 // Canonical internal format. Everything inside the engine is float32 interleaved.
@@ -97,6 +98,8 @@ struct Bus {
     // Gate and compressor, used on the microphone channel.
     dsp::MicParams mic;
     dsp::MicChain micChain;
+    dsp::DenoiseParams denoise;
+    dsp::NoiseSuppressor denoiser;
     // Pan, delay, limiter and ducking -- playback channels only.
     dsp::MixParams mix;
     dsp::MixChain mixChain;
@@ -135,6 +138,7 @@ int runSelfTest(const std::string& channel, int seconds);
 // Offline filter checks: no devices, no audio hardware. Returns 0 on pass.
 int runDspTest();
 int runMixTest();
+int runDenoiseTest();
 
 // Windows keeps separate default endpoints per role: Console (0), Multimedia
 // (1) and Communications (2). Chat applications follow Communications, which
@@ -156,6 +160,7 @@ public:
     void setDynamics(dsp::MicParams* mic, dsp::MicChain* chain);
     // Where to publish how open the gate is, for channels that duck.
     void setActivity(std::atomic<float>* activity);
+    void setDenoise(dsp::DenoiseParams* p, dsp::NoiseSuppressor* ns);
     // Optional second destination for the processed signal, so you can hear
     // your own voice as applications will hear it.
     void setMonitor(FloatRing* monitor);
@@ -175,6 +180,8 @@ private:
     dsp::ChannelStrip* strip_ = nullptr;
     dsp::MicParams* mic_ = nullptr;
     dsp::MicChain* micChain_ = nullptr;
+    dsp::DenoiseParams* denoise_ = nullptr;
+    dsp::NoiseSuppressor* denoiser_ = nullptr;
     std::atomic<float>* activity_ = nullptr;
 
     void publishActivity(const float* samples, size_t count);

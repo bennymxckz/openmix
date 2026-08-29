@@ -392,6 +392,7 @@ int main(int argc, char** argv) {
         std::printf("\n");
         rc |= runDynamicsTest();
         rc |= runMixTest();
+        rc |= runDenoiseTest();
         ::CoUninitialize();
         return rc;
     }

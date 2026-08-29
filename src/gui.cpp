@@ -323,6 +323,8 @@ void saveSettings() {
         g_config.setFloat(m + "duckrel", b.mix.duckReleaseMs);
 
         if (b.isCapture) {
+            g_config.setBool(k + "nr.on", b.denoise.enabled);
+            g_config.setFloat(k + "nr.strength", b.denoise.strength);
             g_config.setBool(k + "gate.on", b.mic.gate.enabled);
             g_config.setFloat(k + "gate.thresh", b.mic.gate.thresholdDb);
             g_config.setFloat(k + "gate.hold", b.mic.gate.holdMs);
@@ -369,6 +371,8 @@ void applySettings() {
             bands[i]->q      = g_config.getFloat(e + names[i] + ".q", bands[i]->q);
         }
         if (b.isCapture) {
+            b.denoise.enabled      = g_config.getBool(k + "nr.on", false);
+            b.denoise.strength     = g_config.getFloat(k + "nr.strength", 0.5f);
             b.mic.gate.enabled     = g_config.getBool(k + "gate.on", false);
             b.mic.gate.thresholdDb = g_config.getFloat(k + "gate.thresh", b.mic.gate.thresholdDb);
             b.mic.gate.holdMs      = g_config.getFloat(k + "gate.hold", b.mic.gate.holdMs);
@@ -772,6 +776,42 @@ void drawEffects(Bus& b) {
             b.monitorGain = gainFromPercent(mon);
             changed = true;
         }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::PushFont(g_fontHead);
+        ImGui::TextUnformatted("Noise suppression");
+        ImGui::PopFont();
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("##nron", &b.denoise.enabled);
+        ImGui::PushFont(g_fontSmall);
+        mix::textDim("Takes the room out from under your voice, not just between "
+                     "words.");
+        ImGui::PopFont();
+
+        ImGui::BeginDisabled(!b.denoise.enabled);
+        float nr = b.denoise.strength * 100.0f;
+        ImGui::SetNextItemWidth(-150.0f * g_scale);
+        if (ImGui::SliderFloat("Strength", &nr, 0.0f, 100.0f, "%.0f%%")) {
+            b.denoise.strength = std::clamp(nr, 0.0f, 100.0f) / 100.0f;
+            changed = true;
+        }
+        tip("Past about 80% the artefacts cost more than the noise did.\n"
+            "Adds 11 ms of delay to the microphone while it is on.");
+        ImGui::PushFont(g_fontSmall);
+        {
+            const float red = b.denoiser.reductionDb();
+            if (b.denoise.enabled && red < -0.3f) {
+                ImGui::TextColored(theme::toVec(theme::kAccent),
+                                   "taking out %.1f dB across the spectrum", -red);
+            } else {
+                mix::textDim("nothing to take out");
+            }
+        }
+        ImGui::PopFont();
+        ImGui::EndDisabled();
 
         ImGui::Spacing();
         ImGui::Separator();

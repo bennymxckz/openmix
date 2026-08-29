@@ -7,6 +7,7 @@
 // for the gaps and repeats that a broken clock produces.
 
 #include "audio.h"
+#include "denoise.h"
 #include "dsp.h"
 #include "dynamics.h"
 
@@ -604,5 +605,162 @@ int runMixTest() {
     }
 
     std::printf("\n%s\n", ok ? "PASS - all output shaping checks" : "FAIL");
+    return ok ? 0 : 1;
+}
+
+// ---------------------------------------------------------------------------
+// Noise suppression.
+//
+// Judged on what it is for: does broadband noise come down, does speech-like
+// audio survive, and does the ratio of the two improve. A steady sine is not a
+// fair test -- it is stationary, so a minimum-statistics estimator is supposed
+// to treat it as noise, and a microphone benefits from that.
+
+namespace {
+
+// A fixed sequence rather than a random one, so a failure reproduces.
+struct Noise {
+    uint32_t state = 0x13579BDFu;
+    float next() {
+        state = state * 1664525u + 1013904223u;
+        return (static_cast<float>(state >> 8) / 8388608.0f) - 1.0f;   // -1..1
+    }
+};
+
+double rmsDb(const std::vector<float>& buf, size_t from, size_t to, unsigned channels) {
+    double sumSq = 0.0;
+    size_t n = 0;
+    for (size_t i = from; i < to; ++i) {
+        const double v = buf[i * channels];
+        sumSq += v * v;
+        ++n;
+    }
+    if (!n) return -120.0;
+    const double rms = std::sqrt(sumSq / static_cast<double>(n));
+    return rms > 1e-9 ? 20.0 * std::log10(rms) : -120.0;
+}
+
+// Speech-like: a tone switched on and off in quarter-second bursts, over a
+// noise floor. A toneAmp of zero gives noise alone.
+std::vector<float> makeSignal(size_t frames, unsigned channels, float toneAmp, float noiseAmp) {
+    Noise rng;
+    std::vector<float> buf(frames * channels);
+    const double step = 2.0 * 3.14159265358979 * 440.0 / kSampleRate;
+    const size_t burst = kSampleRate / 4;
+    for (size_t i = 0; i < frames; ++i) {
+        const bool on = ((i / burst) % 2) == 0;
+        const float tone = on ? toneAmp * static_cast<float>(
+                                    std::sin(step * static_cast<double>(i)))
+                              : 0.0f;
+        const float v = tone + noiseAmp * rng.next();
+        for (unsigned c = 0; c < channels; ++c) buf[i * channels + c] = v;
+    }
+    return buf;
+}
+
+}  // namespace
+
+int runDenoiseTest() {
+    std::printf("\nNoise suppression at %u Hz\n\n", kSampleRate);
+    bool ok = true;
+
+    const size_t frames = kSampleRate * 4;          // four seconds
+    const size_t burst = kSampleRate / 4;
+
+    {
+        // Disabled has to be bit-transparent, not merely quiet.
+        dsp::DenoiseParams p;
+        auto buf = makeSignal(frames / 8, kChannels, 0.3f, 0.01f);
+        const auto before = buf;
+        dsp::NoiseSuppressor ns;
+        ns.prepare(kSampleRate);
+        ns.process(p, buf.data(), frames / 8, kChannels);
+        const bool same = std::memcmp(before.data(), buf.data(),
+                                      buf.size() * sizeof(float)) == 0;
+        std::printf("  %-44s %s\n", "disabled leaves every sample alone",
+                    same ? "PASS" : "FAIL");
+        ok &= same;
+    }
+    {
+        // Noise alone, which should come well down once the floor is learnt.
+        dsp::DenoiseParams p;
+        p.enabled = true;
+        p.strength = 0.7f;
+        auto buf = makeSignal(frames, kChannels, 0.0f, 0.01f);
+        const double before = rmsDb(buf, kSampleRate * 2, frames, kChannels);
+        dsp::NoiseSuppressor ns;
+        ns.prepare(kSampleRate);
+        ns.process(p, buf.data(), frames, kChannels);
+        const double after = rmsDb(buf, kSampleRate * 2, frames, kChannels);
+        const double drop = before - after;
+        const bool good = drop >= 8.0;
+        std::printf("  %-44s %5.1f dB (want 8.0 or more)  %s\n",
+                    "steady noise is pushed down", drop, good ? "PASS" : "FAIL");
+        ok &= good;
+    }
+    {
+        // Speech-like audio has to survive, or the feature is a mute button.
+        dsp::DenoiseParams p;
+        p.enabled = true;
+        p.strength = 0.7f;
+        auto buf = makeSignal(frames, kChannels, 0.25f, 0.01f);
+
+        // A burst well after the estimator has settled, measured away from its
+        // edges so the one-window delay cannot smear the comparison.
+        const size_t onFrom = burst * 8 + 4000, onTo = burst * 9 - 4000;
+        const size_t offFrom = burst * 9 + 4000, offTo = burst * 10 - 4000;
+        const double onBefore = rmsDb(buf, onFrom, onTo, kChannels);
+        const double offBefore = rmsDb(buf, offFrom, offTo, kChannels);
+
+        dsp::NoiseSuppressor ns;
+        ns.prepare(kSampleRate);
+        ns.process(p, buf.data(), frames, kChannels);
+
+        const double onAfter = rmsDb(buf, onFrom, onTo, kChannels);
+        const double offAfter = rmsDb(buf, offFrom, offTo, kChannels);
+
+        const double lost = onBefore - onAfter;
+        const bool kept = lost <= 2.0;
+        std::printf("  %-44s %5.1f dB (want 2.0 or less)  %s\n",
+                    "speech-like audio loses little", lost, kept ? "PASS" : "FAIL");
+        ok &= kept;
+
+        const double gained = (onAfter - offAfter) - (onBefore - offBefore);
+        const bool better = gained >= 5.0;
+        std::printf("  %-44s %5.1f dB (want 5.0 or more)  %s\n",
+                    "signal to noise improves", gained, better ? "PASS" : "FAIL");
+        ok &= better;
+    }
+    {
+        // The ring bookkeeping is the part most likely to be subtly wrong, so
+        // the delay is measured rather than trusted.
+        dsp::DenoiseParams p;
+        p.enabled = true;
+        p.strength = 0.0f;
+        const size_t n = kSampleRate;
+        std::vector<float> buf(n * kChannels, 0.0f);
+        for (size_t i = n / 2; i < n / 2 + 2000; ++i) {
+            const float v = 0.5f * static_cast<float>(std::sin(
+                2.0 * 3.14159265358979 * 440.0 * static_cast<double>(i) / kSampleRate));
+            for (unsigned c = 0; c < kChannels; ++c) buf[i * kChannels + c] = v;
+        }
+        dsp::NoiseSuppressor ns;
+        ns.prepare(kSampleRate);
+        ns.process(p, buf.data(), n, kChannels);
+
+        size_t at = 0;
+        for (size_t i = n / 2; i < n; ++i) {
+            if (std::fabs(buf[i * kChannels]) > 0.02f) { at = i; break; }
+        }
+        const long delay = static_cast<long>(at) - static_cast<long>(n / 2);
+        // One window, give or take the window taper at the start of the burst.
+        const bool delayOk = delay >= 480 && delay <= 580;
+        std::printf("  %-44s %4ld samples (want about 512)  %s\n",
+                    "output lags input by one window", delay,
+                    delayOk ? "PASS" : "FAIL");
+        ok &= delayOk;
+    }
+
+    std::printf("\n%s\n", ok ? "PASS - all noise suppression checks" : "FAIL");
     return ok ? 0 : 1;
 }
