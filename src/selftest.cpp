@@ -732,6 +732,27 @@ int runDenoiseTest() {
         ok &= better;
     }
     {
+        // Strength has to mean something, or it is a decoration.
+        auto reduce = [&](float strength) {
+            dsp::DenoiseParams p;
+            p.enabled = true;
+            p.strength = strength;
+            auto buf = makeSignal(frames, kChannels, 0.0f, 0.01f);
+            const double before = rmsDb(buf, kSampleRate * 2, frames, kChannels);
+            dsp::NoiseSuppressor ns;
+            ns.prepare(kSampleRate);
+            ns.process(p, buf.data(), frames, kChannels);
+            return before - rmsDb(buf, kSampleRate * 2, frames, kChannels);
+        };
+        const double gentle = reduce(0.2f);
+        const double hard = reduce(0.9f);
+        const bool ordered = hard > gentle + 3.0;
+        std::printf("  %-44s %5.1f then %.1f dB (must rise)  %s\n",
+                    "a stronger setting takes out more", gentle, hard,
+                    ordered ? "PASS" : "FAIL");
+        ok &= ordered;
+    }
+    {
         // The ring bookkeeping is the part most likely to be subtly wrong, so
         // the delay is measured rather than trusted.
         dsp::DenoiseParams p;

@@ -162,6 +162,8 @@ Clicking a channel opens its own page.
 - **Profiles**: the whole mixer saved under a name — levels, mutes, output
   devices, equalisers, ducking, all of it — so a streaming setup and a casual
   one are one click apart instead of ten controls apart.
+- Ctrl+1 for the mixer, Ctrl+2 onward for the channels in order, so reaching
+  for the microphone mid-game does not mean hunting for a tab.
 - Optional global Ctrl+Alt+M to mute the microphone from anywhere, with the
   state visible from the tray.
 - Optional start with Windows, straight to the tray.

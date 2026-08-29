@@ -1862,6 +1862,17 @@ void drawUi() {
     // Mixer, then one tab per channel. The mixer is the overview; a channel's
     // own page is where its processing lives, at a size worth editing on.
     if (!g_showSettings && g_engine.running()) {
+        // Ctrl+1 is the mixer, Ctrl+2 onward the channels in order. Reaching
+        // for the microphone mid-game should not mean finding a tab.
+        if (ImGui::GetIO().KeyCtrl) {
+            const int count = static_cast<int>(g_engine.buses().size());
+            for (int n = 0; n <= count && n < 9; ++n) {
+                if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_1 + n), false)) {
+                    g_page = n - 1;
+                }
+            }
+        }
+
         auto tab = [&](const char* label, int page, ImU32 color) {
             const bool on = (g_page == page);
             // theme::fade returns a packed colour; PushStyleColor needs the
@@ -1879,6 +1890,7 @@ void drawUi() {
         };
 
         tab("Mixer", -1, theme::kAccent);
+        tip("Ctrl+1");
         ImGui::SameLine(0.0f, 6.0f * g_scale);
         ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(theme::kLine));
         ImGui::AlignTextToFramePadding();
@@ -1889,6 +1901,11 @@ void drawUi() {
         for (size_t i = 0; i < buses.size(); ++i) {
             ImGui::SameLine(0.0f, 6.0f * g_scale);
             tab(buses[i].name.c_str(), static_cast<int>(i), theme::channelColor(i));
+            if (i < 8) {
+                char key[8];
+                std::snprintf(key, sizeof(key), "Ctrl+%d", static_cast<int>(i) + 2);
+                tip(key);
+            }
         }
         ImGui::Dummy(ImVec2(0, 6.0f * g_scale));
     }
@@ -2064,6 +2081,24 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     // Launched by the autostart entry: go straight to the tray rather than
     // throwing a window in the user's face at every sign-in.
     g_config.load();
+    // One fader per channel now, so the separate stream levels are dead
+    // weight. The settings file is meant to be readable by hand, and a key
+    // nothing reads any more would sit there forever confusing whoever opens
+    // it.
+    {
+        bool dropped = false;
+        for (const auto& key : g_config.keys()) {
+            const char* dead[] = { ".streamGain", ".streamMute" };
+            for (const char* suffix : dead) {
+                const size_t n = std::strlen(suffix);
+                if (key.size() > n && key.compare(key.size() - n, n, suffix) == 0) {
+                    g_config.removePrefix(key);
+                    dropped = true;
+                }
+            }
+        }
+        if (dropped) g_config.save();
+    }
     restoreWindowPlacement();
 
     const bool startHidden = ::wcsstr(::GetCommandLineW(), L"--tray") != nullptr;
