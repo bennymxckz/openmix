@@ -249,6 +249,11 @@ bool Engine::setChannelDevice(size_t busIndex, const std::string& deviceName,
     return rebuildOutputs(err);
 }
 
+bool Engine::rerouteAll(std::string& err) {
+    if (!running_) return false;
+    return rebuildOutputs(err);
+}
+
 bool Engine::setOutputDevice(const std::string& match, std::string& err) {
     if (!running_) return false;
     cfg_.outMatch = match;

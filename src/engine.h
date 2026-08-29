@@ -49,6 +49,10 @@ public:
     double monitorBufferMs() const;
     // Route one channel to its own device, or to the primary when empty.
     bool setChannelDevice(size_t busIndex, const std::string& deviceName, std::string& err);
+    // Reopen the monitor outputs to match whatever the buses now say. For
+    // callers that have set several channels at once and want one restart
+    // rather than one per channel.
+    bool rerouteAll(std::string& err);
     const EngineConfig& config() const { return cfg_; }
 
     // Swap the monitor output or microphone source while running. Only that

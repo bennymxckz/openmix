@@ -1144,11 +1144,11 @@ void loadProfile(const std::string& name) {
     for (const auto& [k, v] : restore) g_config.set(k, v);
     applySettings();
 
-    // Output devices live in the profile too, so the engine has to be told.
+    // Output devices live in the profile too, so the engine has to be told --
+    // once, not once per channel. Each rebuild reopens the monitor, and four
+    // of them for one click is four gaps in the audio.
     std::string err;
-    for (size_t i = 0; i < g_engine.buses().size(); ++i) {
-        g_engine.setChannelDevice(i, g_engine.buses()[i].outputDevice, err);
-    }
+    g_engine.rerouteAll(err);
     g_config.save();
 }
 
