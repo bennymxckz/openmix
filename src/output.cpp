@@ -179,6 +179,15 @@ bool renameEndpoint(const std::wstring& deviceId, const std::wstring& newName) {
     return SUCCEEDED(props->Commit());
 }
 
+bool MonitorOutput::owns(const Bus& b) const {
+    // A channel with no device of its own follows this output. That has to be
+    // the default: if unrouted channels belonged to nobody, their rings would
+    // never drain, and the playback worker clock-locks to that draining -- it
+    // would block on every packet and throughput would collapse.
+    if (b.outputDevice.empty()) return true;
+    return b.outputDevice == deviceName_ || b.outputDevice == deviceMatch_;
+}
+
 DWORD WINAPI MonitorOutput::thunk(LPVOID self) {
     static_cast<MonitorOutput*>(self)->run();
     return 0;
@@ -386,6 +395,7 @@ bool MonitorOutput::streamOnce() {
         for (const auto& bus : *buses_) anySolo |= bus.soloed;
 
         for (auto& bus : *buses_) {
+            if (!owns(bus)) continue;
             // A capture bus keeps its ring for the USB capture endpoint; its
             // monitor copy lives in the second ring.
             FloatRing& src = bus.isCapture ? bus.stream : bus.ring;
@@ -393,7 +403,10 @@ bool MonitorOutput::streamOnce() {
             // backlog that plays back when solo is released.
             src.trimTo(maxBacklog);
             const bool audible = anySolo ? bus.soloed : !bus.muted;
-            src.mixInto(mix.data(), samples, audible ? bus.gain : 0.0f);
+            // The microphone's fader is what applications hear; what you hear
+            // of yourself is a separate level.
+            const float level = bus.isCapture ? bus.monitorGain : bus.gain;
+            src.mixInto(mix.data(), samples, audible ? level : 0.0f);
         }
 
         // Soft clip so a hot sum cannot produce digital overs in the monitor.

@@ -65,19 +65,28 @@ struct Bus {
     // the mixer must not consume their ring.
     bool isCapture = false;
 
-    // What you hear in your headphones.
+    // One level per channel, 0..1 amplitude. Shown as a percentage: a dB
+    // scale spends most of its travel on levels that are effectively silent.
     float gain = 1.0f;
     bool muted = false;
+
+    // Only the microphone uses this: how loud you hear yourself, separate
+    // from how loud applications hear you. Silent by default, because hearing
+    // your own voice unasked is startling and on speakers it feeds back.
+    float monitorGain = 0.0f;
+
+    // Where this channel is heard. Empty means the shared default, which is
+    // what "linked" leaves every channel on.
+    std::string outputDevice;
     // Solo affects monitoring only. It is a way to check one channel, not a
     // way to change what the stream receives, and it is deliberately not
     // persisted -- coming back to a silent mixer would be baffling.
     bool soloed = false;
 
-    // What OBS records, independently. Separate rings because each is a
-    // single-producer/single-consumer queue with a different consumer: the
-    // monitor thread drains `ring`, the USB capture endpoint drains `stream`.
-    float streamGain = 1.0f;
-    bool streamMuted = false;
+    // A second ring, because each is single-producer/single-consumer with a
+    // different consumer: the monitor thread drains `ring`, the USB capture
+    // endpoint drains `stream`. On a playback channel it carries the copy OBS
+    // records; on the microphone it carries the copy you monitor.
     FloatRing stream;
 
     // EQ is a property of the channel, so it applies before the split and
@@ -168,7 +177,11 @@ public:
     // deviceMatch is a case-insensitive substring of the output device's name;
     // empty means "use the system default". openmix's own virtual endpoints are
     // never selected, so the monitor mix cannot loop back into the engine.
+    // `deviceMatch` is the device this output owns. It mixes the buses routed
+    // to it and leaves the rest to whichever output owns those.
     bool start(std::vector<Bus>* buses, const std::string& deviceMatch, std::string& err);
+    // True when this output should carry a bus.
+    bool owns(const Bus& b) const;
     void stop();
     double bufferMs() const { return bufferMs_; }
     const std::string& deviceName() const { return deviceName_; }

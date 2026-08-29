@@ -81,16 +81,18 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
             ep->source = &buses_[i].ring;
             // The stream fader is how loud applications hear the microphone;
             // the headphone fader is how loud you hear yourself.
-            ep->streamGain  = &buses_[i].streamGain;
-            ep->streamMuted = &buses_[i].streamMuted;
+            // One fader per channel: the level you set is the level everyone
+            // gets, here and on the stream.
+            ep->streamGain  = &buses_[i].gain;
+            ep->streamMuted = &buses_[i].muted;
         } else {
             // Playback channels are duplex: applications render in, OBS
             // records the same audio back out at its own level.
             ep->sink        = &buses_[i].ring;
             ep->streamTap   = &buses_[i].stream;
             ep->source      = &buses_[i].stream;
-            ep->streamGain  = &buses_[i].streamGain;
-            ep->streamMuted = &buses_[i].streamMuted;
+            ep->streamGain  = &buses_[i].gain;
+            ep->streamMuted = &buses_[i].muted;
             ep->eq          = &buses_[i].eq;
             ep->strip       = &buses_[i].strip;
         }

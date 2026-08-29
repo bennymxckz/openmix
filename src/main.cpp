@@ -321,8 +321,8 @@ int main(int argc, char** argv) {
                 ep->sink        = &buses[i].ring;
                 ep->streamTap   = &buses[i].stream;
                 ep->source      = &buses[i].stream;
-                ep->streamGain  = &buses[i].streamGain;
-                ep->streamMuted = &buses[i].streamMuted;
+                ep->streamGain  = &buses[i].gain;
+                ep->streamMuted = &buses[i].muted;
             }
             ep->busid = "1-" + std::to_string(i + 1);
             endpoints.push_back(std::move(ep));

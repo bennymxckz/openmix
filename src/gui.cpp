@@ -156,7 +156,7 @@ void showTrayMenu(HWND hwnd) {
 
     for (const auto& b : g_engine.buses()) {
         if (!b.isCapture) continue;
-        ::AppendMenuW(menu, MF_STRING | (b.streamMuted ? MF_CHECKED : 0),
+        ::AppendMenuW(menu, MF_STRING | (b.muted ? MF_CHECKED : 0),
                       ID_TRAY_MICMUTE, L"Mute microphone");
         break;
     }
@@ -223,7 +223,7 @@ LRESULT WINAPI wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (LOWORD(wp) == ID_TRAY_MICMUTE) {
                 for (auto& b : g_engine.buses()) {
                     if (!b.isCapture) continue;
-                    b.streamMuted = !b.streamMuted;
+                    b.muted = !b.muted;
                     break;
                 }
                 return 0;
@@ -233,11 +233,10 @@ LRESULT WINAPI wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         case WM_HOTKEY:
             if (wp == ID_HOTKEY_MIC) {
-                // Mute the stream side: what applications hear. The headphone
-                // side is your own monitoring and is a separate thing.
+                // One level per channel now, so this is simply the mic mute.
                 for (auto& b : g_engine.buses()) {
                     if (!b.isCapture) continue;
-                    b.streamMuted = !b.streamMuted;
+                    b.muted = !b.muted;
                     break;
                 }
                 return 0;
@@ -283,8 +282,7 @@ void saveSettings() {
         const std::string k = "bus." + b.name + ".";
         g_config.setFloat(k + "gain", b.gain);
         g_config.setBool(k + "mute", b.muted);
-        g_config.setFloat(k + "streamGain", b.streamGain);
-        g_config.setBool(k + "streamMute", b.streamMuted);
+        g_config.setFloat(k + "monitor", b.monitorGain);
 
         const std::string e = k + "eq.";
         g_config.setBool(e + "on", b.eq.enabled);
@@ -315,12 +313,9 @@ void saveSettings() {
 void applySettings() {
     for (auto& b : g_engine.buses()) {
         const std::string k = "bus." + b.name + ".";
-        // Microphone monitoring defaults to silent: hearing your own voice
-        // unasked is startling, and on speakers it feeds back.
-        b.gain        = g_config.getFloat(k + "gain", b.isCapture ? 0.0f : 1.0f);
+        b.gain        = g_config.getFloat(k + "gain", 1.0f);
         b.muted       = g_config.getBool(k + "mute", false);
-        b.streamGain  = g_config.getFloat(k + "streamGain", 1.0f);
-        b.streamMuted = g_config.getBool(k + "streamMute", false);
+        b.monitorGain = g_config.getFloat(k + "monitor", 0.0f);
 
         const std::string e = k + "eq.";
         b.eq.enabled = g_config.getBool(e + "on", false);
@@ -399,7 +394,7 @@ void updateTrayTip() {
     for (const auto& b : g_engine.buses()) {
         if (!b.isCapture) continue;
         haveMic = true;
-        micMuted = b.streamMuted;
+        micMuted = b.muted;
         break;
     }
     const wchar_t* text = !g_engine.running() ? L"openmix - not running"
@@ -440,8 +435,9 @@ void restartEngine() {
     if (g_engine.start(cfg, g_startError)) applySettings();
 }
 
-float dbFromGain(float g) { return 20.0f * std::log10(g > 0.0005f ? g : 0.0005f); }
-float gainFromDb(float db) { return db <= -59.5f ? 0.0f : std::pow(10.0f, db / 20.0f); }
+// Levels are a percentage of full scale, linear in amplitude.
+float percentFromGain(float g) { return std::clamp(g, 0.0f, 1.0f) * 100.0f; }
+float gainFromPercent(float p) { return std::clamp(p, 0.0f, 100.0f) / 100.0f; }
 
 void openWindowsAppVolume();
 
@@ -578,6 +574,23 @@ void drawEffects(Bus& b) {
         ImGui::Spacing();
 
         ImGui::PushFont(g_fontHead);
+        ImGui::TextUnformatted("Hear yourself");
+        ImGui::PopFont();
+        ImGui::PushFont(g_fontSmall);
+        mix::textDim("Separate from how loud applications hear you.");
+        ImGui::PopFont();
+        float mon = percentFromGain(b.monitorGain);
+        ImGui::SetNextItemWidth(-150.0f * g_scale);
+        if (ImGui::SliderFloat("In your headphones", &mon, 0.0f, 100.0f, "%.0f%%")) {
+            b.monitorGain = gainFromPercent(mon);
+            changed = true;
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::PushFont(g_fontHead);
         ImGui::TextUnformatted("Noise gate");
         ImGui::PopFont();
         ImGui::SameLine();
@@ -693,64 +706,42 @@ void drawStrip(size_t index, Bus& b, bool attached, float rate, float height) {
     ImGui::Unindent(10.0f * g_scale);
     ImGui::Dummy(ImVec2(0, 6.0f * g_scale));
 
-    // Meter and the two faders, side by side. Left is what you hear, right is
-    // what everyone else hears; that holds on every strip including the mic.
-    const float faderH = height - 172.0f * g_scale;
-    const float meterW = 12.0f * g_scale;
-    const float faderW = 38.0f * g_scale;
-    const float faderGap = 8.0f * g_scale;
+    // One level per channel: what you set is what everyone gets, here and on
+    // the stream. Two faders per channel read as twice the decision.
+    const float faderH = height - 176.0f * g_scale;
+    const float meterW = 13.0f * g_scale;
+    const float faderW = 46.0f * g_scale;
 
-    ImGui::SetCursorPosX(12.0f * g_scale);
+    float percent = percentFromGain(b.gain);
+
+    ImGui::PushFont(g_fontHead);
+    {
+        char pct[12];
+        std::snprintf(pct, sizeof(pct), "%.0f%%", percent);
+        const float w = ImGui::CalcTextSize(pct).x;
+        ImGui::SetCursorPosX((stripW - w) * 0.5f);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(b.muted ? theme::kMuted : accent));
+        ImGui::TextUnformatted(pct);
+        ImGui::PopStyleColor();
+    }
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0, 4.0f * g_scale));
+
+    const float groupW = meterW + 8.0f * g_scale + faderW;
+    ImGui::SetCursorPosX((stripW - groupW) * 0.5f);
     if (g_meters.size() <= index) g_meters.resize(index + 1);
     mix::verticalMeter(g_meters[index], b.ring.takePeak(),
                        ImGui::GetIO().DeltaTime, ImVec2(meterW, faderH));
 
     bool released = false;
-    float db = dbFromGain(b.gain);
-    ImGui::SameLine(0.0f, 6.0f * g_scale);
-    if (mix::verticalFader("mon", &db, ImVec2(faderW, faderH), accent, &released)) {
-        b.gain = gainFromDb(db);
+    ImGui::SameLine(0.0f, 8.0f * g_scale);
+    if (mix::verticalFader("lvl", &percent, ImVec2(faderW, faderH), accent, &released)) {
+        b.gain = gainFromPercent(percent);
     }
     if (released) saveSettings();
-    tip(b.isCapture ? "How loud you hear yourself" : "How loud you hear this");
+    tip(b.isCapture ? "How loud applications hear you" : "How loud this channel is");
 
-    float sdb = dbFromGain(b.streamGain);
-    ImGui::SameLine(0.0f, faderGap);
-    if (mix::verticalFader("str", &sdb, ImVec2(faderW, faderH),
-                           theme::mix(accent, theme::kText, 0.45f), &released)) {
-        b.streamGain = gainFromDb(sdb);
-    }
-    if (released) saveSettings();
-    tip(b.isCapture ? "How loud applications hear you"
-                    : "How loud the stream hears this");
-
-    // Each readout is centred under the fader it belongs to.
-    const float monX = 12.0f * g_scale + meterW + 6.0f * g_scale;
-    const float strX = monX + faderW + faderGap;
-    auto centred = [&](float columnX, const char* text) {
-        const float w = ImGui::CalcTextSize(text).x;
-        ImGui::SetCursorPosX(columnX + (faderW - w) * 0.5f);
-        ImGui::TextUnformatted(text);
-    };
-
-    char buf[16];
-    ImGui::PushFont(g_fontSmall);
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(theme::kTextDim));
-    std::snprintf(buf, sizeof(buf), "%.1f", db);
-    centred(monX, buf);
-    ImGui::SameLine(0.0f, 0.0f);
-    std::snprintf(buf, sizeof(buf), "%.1f", sdb);
-    centred(strX, buf);
-    ImGui::PopStyleColor();
-
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(theme::kTextFaint));
-    centred(monX, "you");
-    ImGui::SameLine(0.0f, 0.0f);
-    centred(strX, b.isCapture ? "apps" : "stream");
-    ImGui::PopStyleColor();
-    ImGui::PopFont();
-
-    ImGui::Dummy(ImVec2(0, 5.0f * g_scale));
+    ImGui::Dummy(ImVec2(0, 6.0f * g_scale));
 
     ImGui::SetCursorPosX(12.0f * g_scale);
     const bool dspOn = b.eq.enabled || b.mic.gate.enabled || b.mic.comp.enabled;
@@ -759,7 +750,7 @@ void drawStrip(size_t index, Bus& b, bool attached, float rate, float height) {
         b.muted = !b.muted;
         saveSettings();
     }
-    tip("Silence this in your headphones only");
+    tip("Silence this channel everywhere");
 
     ImGui::SameLine(0.0f, 4.0f * g_scale);
     if (mix::pillButton("S", b.soloed,
@@ -768,7 +759,7 @@ void drawStrip(size_t index, Bus& b, bool attached, float rate, float height) {
     }
     tip("Hear only the soloed channels. Does not affect the stream.");
 
-    if (b.isCapture && b.streamMuted) {
+    if (b.isCapture && b.muted) {
         // A muted microphone that looks fine is how people talk to nobody for
         // ten minutes, so it is called out rather than implied by a fader.
         ImDrawList* d2 = ImGui::GetWindowDrawList();

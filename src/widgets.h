@@ -26,18 +26,10 @@ inline float meterPosition(float amplitude) {
     return 1.0f - (db / floorDb);
 }
 
-// Faders are not linear in dB either: the useful resolution is near unity, so
-// the top of the travel gets more room than the bottom.
-inline float faderPosition(float db) {
-    constexpr float lo = -60.0f, hi = 12.0f;
-    const float t = (db - lo) / (hi - lo);
-    return std::pow(std::clamp(t, 0.0f, 1.0f), 0.75f);
-}
-
-inline float faderDb(float pos) {
-    constexpr float lo = -60.0f, hi = 12.0f;
-    return lo + (hi - lo) * std::pow(std::clamp(pos, 0.0f, 1.0f), 1.0f / 0.75f);
-}
+// Faders are a percentage, linear in amplitude. A dB scale spends most of its
+// travel on levels that are effectively silent, which makes the useful part of
+// the fader a short stretch near the top; a percentage gives the whole length
+// to levels you would actually choose.
 
 struct MeterState {
     float level = 0.0f;
@@ -101,9 +93,9 @@ inline void verticalMeter(MeterState& m, float peak, float dt, ImVec2 size) {
     ImGui::Dummy(size);
 }
 
-// A vertical fader. Returns true while being changed. Double-click resets to
-// unity, which is the one value anyone wants to return to exactly.
-inline bool verticalFader(const char* id, float* db, ImVec2 size, ImU32 accent,
+// A vertical fader over 0..100%. Returns true while being changed.
+// Double-click resets to full, the one value anyone returns to exactly.
+inline bool verticalFader(const char* id, float* percent, ImVec2 size, ImU32 accent,
                           bool* released = nullptr) {
     ImGui::PushID(id);
     const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -113,25 +105,24 @@ inline bool verticalFader(const char* id, float* db, ImVec2 size, ImU32 accent,
     if (released) *released = ImGui::IsItemDeactivatedAfterEdit();
 
     bool changed = false;
-    // A wheel notch is 1 dB, or a fifth of that with Ctrl held, because most
-    // adjustments are small and dragging a 72 dB travel precisely is fiddly.
+    // A wheel notch is 2%, or a fifth of that with Ctrl held.
     if (hovered) {
         const float wheel = ImGui::GetIO().MouseWheel;
         if (wheel != 0.0f) {
-            *db = std::clamp(*db + wheel * (ImGui::GetIO().KeyCtrl ? 0.2f : 1.0f),
-                             -60.0f, 12.0f);
+            *percent = std::clamp(*percent + wheel * (ImGui::GetIO().KeyCtrl ? 0.4f : 2.0f),
+                                  0.0f, 100.0f);
             changed = true;
             if (released) *released = true;   // persist it like a drag
         }
     }
     if (ImGui::IsItemActivated() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-        *db = 0.0f;
+        *percent = 100.0f;
         changed = true;
     } else if (active) {
         const float t = 1.0f - std::clamp((ImGui::GetIO().MousePos.y - p.y) / size.y, 0.0f, 1.0f);
-        const float want = faderDb(t);
-        if (want != *db) {
-            *db = want;
+        const float want = t * 100.0f;
+        if (want != *percent) {
+            *percent = want;
             changed = true;
         }
     }
@@ -144,12 +135,14 @@ inline bool verticalFader(const char* id, float* db, ImVec2 size, ImU32 accent,
                       ImVec2(cx + trackW * 0.5f, p.y + size.y),
                       theme::kMeterBg, trackW * 0.5f);
 
-    // Unity is marked, because "back to zero" is a thing people aim for.
-    const float unityY = p.y + size.y * (1.0f - faderPosition(0.0f));
-    dl->AddLine(ImVec2(p.x + 2.0f, unityY), ImVec2(p.x + size.x - 2.0f, unityY),
-                theme::fade(theme::kTextFaint, 0.7f), 1.0f);
+    // Quarter marks, so a glance reads roughly where the fader sits.
+    for (int q = 1; q <= 3; ++q) {
+        const float y = p.y + size.y * (1.0f - q * 0.25f);
+        dl->AddLine(ImVec2(p.x + 4.0f, y), ImVec2(p.x + size.x - 4.0f, y),
+                    theme::fade(theme::kTextFaint, 0.35f), 1.0f);
+    }
 
-    const float t = faderPosition(*db);
+    const float t = std::clamp(*percent / 100.0f, 0.0f, 1.0f);
     const float y = p.y + size.y * (1.0f - t);
     dl->AddRectFilled(ImVec2(cx - trackW * 0.5f, y),
                       ImVec2(cx + trackW * 0.5f, p.y + size.y),
