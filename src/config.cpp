@@ -109,6 +109,19 @@ bool Config::getBool(const std::string& key, bool fallback) const {
     return it->second == "1" || it->second == "true" || it->second == "yes";
 }
 
+std::vector<std::string> Config::keys() const {
+    std::vector<std::string> out;
+    out.reserve(values_.size());
+    for (const auto& [k, v] : values_) out.push_back(k);
+    return out;
+}
+
+void Config::removePrefix(const std::string& prefix) {
+    for (auto it = values_.begin(); it != values_.end();) {
+        it = (it->first.rfind(prefix, 0) == 0) ? values_.erase(it) : std::next(it);
+    }
+}
+
 void Config::set(const std::string& key, const std::string& value) {
     values_[key] = value;
 }

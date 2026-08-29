@@ -68,6 +68,9 @@ bool g_showSettings = false;
 bool g_showWelcome = false;
 bool g_ownDefaults = false;
 bool g_linkDevices = true;
+// -1 is the mixer; anything else is that channel's own page.
+int g_page = -1;
+char g_presetName[40] = {};
 
 // Defined further down, but used by the engine restart and shutdown paths
 // above them.
@@ -697,7 +700,8 @@ void drawEffects(Bus& b) {
     tip("Reset every band to no change");
 
     ImGui::Spacing();
-    drawEqCurve(b.eq, ImVec2(ImGui::GetContentRegionAvail().x, 96.0f * g_scale));
+    drawEqCurve(b.eq, ImVec2(ImGui::GetContentRegionAvail().x,
+                             (g_page >= 0 ? 200.0f : 96.0f) * g_scale));
     ImGui::Spacing();
 
     ImGui::BeginDisabled(!b.eq.enabled);
@@ -945,25 +949,9 @@ void drawStrip(size_t index, Bus& b, bool attached, float rate, float height) {
     ImGui::SameLine(0.0f, 4.0f * g_scale);
     if (mix::pillButton(b.isCapture ? "FX" : "EQ", dspOn,
                         ImVec2(30.0f * g_scale, 24.0f * g_scale), theme::kAccent)) {
-        ImGui::OpenPopup("fx");
+        g_page = static_cast<int>(index);
     }
     tip(b.isCapture ? "Equaliser, noise gate and compressor" : "Equaliser");
-
-    // BeginPopup auto-resizes to its content and ignores a maximum, so a tall
-    // panel runs off the bottom of the screen instead of scrolling. Give the
-    // microphone panel an explicit height; the playback one is short enough to
-    // size itself.
-    const float fxW = 460.0f * g_scale;
-    if (b.isCapture) {
-        const float room = ImGui::GetMainViewport()->WorkSize.y - 80.0f * g_scale;
-        ImGui::SetNextWindowSize(ImVec2(fxW, (std::min)(620.0f * g_scale, room)));
-    } else {
-        ImGui::SetNextWindowSize(ImVec2(fxW, 0));
-    }
-    if (ImGui::BeginPopup("fx")) {
-        drawEffects(b);
-        ImGui::EndPopup();
-    }
 
     ImGui::EndChild();
     ImGui::PopID();
@@ -1249,6 +1237,124 @@ void drawWelcome() {
     ImGui::Dummy(ImVec2(0, 10.0f * g_scale));
 }
 
+// ---- equaliser presets --------------------------------------------------
+//
+// Stored in the same plain-text settings file as everything else, under
+// preset.<name>.*, and shared across channels: a curve worth keeping for the
+// microphone is often worth trying on a game.
+
+std::vector<std::string> presetNames() {
+    std::vector<std::string> out;
+    for (const auto& key : g_config.keys()) {
+        if (key.rfind("preset.", 0) != 0) continue;
+        const size_t dot = key.find('.', 7);
+        if (dot == std::string::npos) continue;
+        const std::string name = key.substr(7, dot - 7);
+        if (std::find(out.begin(), out.end(), name) == out.end()) out.push_back(name);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+void savePreset(const std::string& name, const dsp::EqParams& eq) {
+    const std::string k = "preset." + name + ".";
+    const dsp::Band* bands[4] = { &eq.hp, &eq.low, &eq.mid, &eq.high };
+    const char* names[4] = { "hp", "low", "mid", "high" };
+    for (int i = 0; i < 4; ++i) {
+        g_config.setBool(k + names[i] + ".on", bands[i]->on);
+        g_config.setFloat(k + names[i] + ".f", bands[i]->freq);
+        g_config.setFloat(k + names[i] + ".g", bands[i]->gainDb);
+        g_config.setFloat(k + names[i] + ".q", bands[i]->q);
+    }
+    g_config.save();
+}
+
+void loadPreset(const std::string& name, dsp::EqParams& eq) {
+    const std::string k = "preset." + name + ".";
+    dsp::Band* bands[4] = { &eq.hp, &eq.low, &eq.mid, &eq.high };
+    const char* names[4] = { "hp", "low", "mid", "high" };
+    for (int i = 0; i < 4; ++i) {
+        bands[i]->on     = g_config.getBool(k + names[i] + ".on", bands[i]->on);
+        bands[i]->freq   = g_config.getFloat(k + names[i] + ".f", bands[i]->freq);
+        bands[i]->gainDb = g_config.getFloat(k + names[i] + ".g", bands[i]->gainDb);
+        bands[i]->q      = g_config.getFloat(k + names[i] + ".q", bands[i]->q);
+    }
+    eq.enabled = true;   // loading a curve and hearing nothing is a puzzle
+}
+
+void deletePreset(const std::string& name) {
+    g_config.removePrefix("preset." + name + ".");
+    g_config.save();
+}
+
+void drawChannelPage(size_t index, Bus& b) {
+    const ImU32 accent = theme::channelColor(index);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    dl->AddRectFilled(ImVec2(p.x, p.y + 2.0f), ImVec2(p.x + 5.0f, p.y + 26.0f), accent, 2.0f);
+    ImGui::Dummy(ImVec2(14.0f * g_scale, 0));
+    ImGui::SameLine();
+    ImGui::PushFont(g_fontHead);
+    ImGui::TextUnformatted(b.name.c_str());
+    ImGui::PopFont();
+    ImGui::SameLine();
+    ImGui::PushFont(g_fontSmall);
+    mix::textDim("Openmix - %s", b.name.c_str());
+    ImGui::PopFont();
+
+    ImGui::Spacing();
+
+    // ---- presets ----
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::toVec(theme::kPanel));
+    ImGui::BeginChild("presets", ImVec2(0, 0),
+                      ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
+    ImGui::PushFont(g_fontSmall);
+    mix::textDim("PRESET");
+    ImGui::PopFont();
+
+    const auto names = presetNames();
+    ImGui::SetNextItemWidth(220.0f * g_scale);
+    if (ImGui::BeginCombo("##preset", names.empty() ? "(none saved)" : "Load a preset")) {
+        for (const auto& n : names) {
+            if (ImGui::Selectable(n.c_str())) {
+                loadPreset(n, b.eq);
+                saveSettings();
+            }
+            if (ImGui::BeginPopupContextItem()) {
+                if (ImGui::MenuItem("Delete")) deletePreset(n);
+                ImGui::EndPopup();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    tip("Right-click a preset to delete it");
+
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(160.0f * g_scale);
+    const bool enter = ImGui::InputTextWithHint("##pname", "Name this curve",
+                                                g_presetName, sizeof(g_presetName),
+                                                ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    if ((ImGui::Button("Save") || enter) && g_presetName[0] != 0) {
+        savePreset(g_presetName, b.eq);
+        g_presetName[0] = 0;
+    }
+    tip("Presets are shared across channels");
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+
+    ImGui::Dummy(ImVec2(0, 10.0f * g_scale));
+
+    // ---- processing ----
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::toVec(theme::kPanel));
+    ImGui::BeginChild("fx", ImVec2(0, 0),
+                      ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
+    drawEffects(b);
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+}
+
 void drawBanner(const char* text, ImU32 color) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -1320,11 +1426,46 @@ void drawUi() {
     ImGui::SameLine(0.0f, 6.0f * g_scale);
     if (ImGui::Button(g_showSettings ? "Mixer" : "Settings", ImVec2(settingsW, 0))) {
         g_showSettings = !g_showSettings;
+        if (g_showSettings) g_page = -1;
     }
 
     ImGui::Dummy(ImVec2(0, 4.0f * g_scale));
     ImGui::Separator();
-    ImGui::Dummy(ImVec2(0, 4.0f * g_scale));
+    ImGui::Dummy(ImVec2(0, 6.0f * g_scale));
+
+    // Mixer, then one tab per channel. The mixer is the overview; a channel's
+    // own page is where its processing lives, at a size worth editing on.
+    if (!g_showSettings && g_engine.running()) {
+        auto tab = [&](const char* label, int page, ImU32 color) {
+            const bool on = (g_page == page);
+            // theme::fade returns a packed colour; PushStyleColor needs the
+            // vector form to sit alongside the transparent default.
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                                  on ? theme::toVec(theme::fade(color, 0.22f))
+                                     : ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                                  theme::toVec(theme::fade(color, 0.16f)));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                                  theme::toVec(theme::fade(color, 0.3f)));
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(on ? color : theme::kTextDim));
+            if (ImGui::Button(label)) g_page = page;
+            ImGui::PopStyleColor(4);
+        };
+
+        tab("Mixer", -1, theme::kAccent);
+        ImGui::SameLine(0.0f, 6.0f * g_scale);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::toVec(theme::kLine));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("|");
+        ImGui::PopStyleColor();
+
+        const auto& buses = g_engine.buses();
+        for (size_t i = 0; i < buses.size(); ++i) {
+            ImGui::SameLine(0.0f, 6.0f * g_scale);
+            tab(buses[i].name.c_str(), static_cast<int>(i), theme::channelColor(i));
+        }
+        ImGui::Dummy(ImVec2(0, 6.0f * g_scale));
+    }
 
     // Problems worth interrupting for.
     if (g_engine.usbipMissing()) {
@@ -1346,6 +1487,11 @@ void drawUi() {
     if (g_showSettings) {
         ImGui::BeginChild("settings", ImVec2(0, 0), false);
         drawSettings();
+        ImGui::EndChild();
+    } else if (g_engine.running() && g_page >= 0 &&
+               static_cast<size_t>(g_page) < g_engine.buses().size()) {
+        ImGui::BeginChild("page", ImVec2(0, 0), false);
+        drawChannelPage(static_cast<size_t>(g_page), g_engine.buses()[g_page]);
         ImGui::EndChild();
     } else if (g_engine.running()) {
         const float height = ImGui::GetContentRegionAvail().y - 4.0f * g_scale;

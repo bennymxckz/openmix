@@ -7,6 +7,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 class Config {
 public:
@@ -23,6 +24,11 @@ public:
     void set(const std::string& key, const std::string& value);
     void setFloat(const std::string& key, float value);
     void setBool(const std::string& key, bool value);
+
+    // Every key currently held, so callers can find grouped entries such as
+    // the equaliser presets.
+    std::vector<std::string> keys() const;
+    void removePrefix(const std::string& prefix);
 
     static std::string path();
 
