@@ -1744,7 +1744,7 @@ void drawChannelPage(size_t index, Bus& b) {
     }
 
     ImGui::SameLine(0.0f, 16.0f * g_scale);
-    ImGui::SetNextItemWidth(160.0f * g_scale);
+    ImGui::SetNextItemWidth(150.0f * g_scale);
     const bool enter = ImGui::InputTextWithHint("##pname", "Save as...",
                                                 g_presetName, sizeof(g_presetName),
                                                 ImGuiInputTextFlags_EnterReturnsTrue);
@@ -1756,6 +1756,22 @@ void drawChannelPage(size_t index, Bus& b) {
     }
     tip("Presets are shared across channels, so a curve set up here can be\n"
         "dropped onto any of them");
+
+    // Somewhere to land after an experiment. It leaves the level and the
+    // output device alone: those are how the channel is set up, not how it is
+    // being played with.
+    ImGui::SameLine(0.0f, 16.0f * g_scale);
+    if (ImGui::Button("Reset")) {
+        b.eq = dsp::EqParams{};
+        b.mix = dsp::MixParams{};
+        if (b.isCapture) {
+            b.mic = dsp::MicParams{};
+            b.denoise = dsp::DenoiseParams{};
+        }
+        shown.clear();
+        saveSettings();
+    }
+    tip("Put the processing back to nothing. Level and device stay as they are.");
     ImGui::EndChild();
     ImGui::PopStyleColor();
 

@@ -85,7 +85,9 @@ public:
             return;
         }
         if (window_.empty()) prepare(sr_);
-        if (channels > 2) channels = 2;
+        // Sized to whatever arrives rather than clamped to stereo: clamping
+        // would change the stride the loop below indexes with, which reads
+        // every frame at the wrong offset.
         if (dry_.size() < kRing * channels) dry_.assign(kRing * channels, 0.0f);
 
         for (size_t i = 0; i < frames; ++i) {
