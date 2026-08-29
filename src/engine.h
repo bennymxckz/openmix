@@ -29,6 +29,9 @@ public:
     bool start(const EngineConfig& cfg, std::string& err);
     void stop();
     bool running() const { return running_; }
+    // How open the microphone is right now, 0..1. What the ducking
+    // reads, so it is worth showing next to the controls for it.
+    float micActivity() const { return micActivity_.load(std::memory_order_relaxed); }
 
     std::vector<Bus>& buses() { return buses_; }
     const std::vector<std::unique_ptr<VirtualEndpoint>>& endpoints() const { return endpoints_; }

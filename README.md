@@ -11,6 +11,11 @@ monitor mix of the lot in your headphones.
 
 ![The openmix mixer](docs/mixer.png)
 
+Clicking a channel opens its own page: equaliser, presets, and the ducking
+that pulls the music down while you talk.
+
+![A channel's own page](docs/channel.png)
+
 ## Why this was hard, and how it works
 
 Windows has no user-mode API for creating an audio endpoint. Endpoints are

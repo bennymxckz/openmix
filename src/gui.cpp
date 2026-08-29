@@ -1538,14 +1538,33 @@ bool drawMixSection(Bus& b) {
     ImGui::SetNextItemWidth(-150.0f * g_scale);
     changed |= ImGui::SliderFloat("Come back over", &b.mix.duckReleaseMs, 50.0f, 2000.0f, "%.0f ms");
 
-    // The reduction actually being applied, so the amount can be set against
-    // real speech instead of guessed at.
+    // What the ducking is reading, and what it is doing about it. Showing
+    // both is the difference between setting this by trial and setting it
+    // while talking.
+    const float act = g_engine.micActivity();
     const float red = b.mixChain.duckReductionDb();
+
+    ImGui::PushFont(g_fontSmall);
+    mix::textDim("Microphone");
+    ImGui::PopFont();
+    ImGui::SameLine(90.0f * g_scale);
+    {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const ImVec2 size(220.0f * g_scale, 8.0f * g_scale);
+        dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), theme::kMeterBg, 2.0f);
+        if (act > 0.005f) {
+            dl->AddRectFilled(p, ImVec2(p.x + size.x * act, p.y + size.y),
+                              theme::kAccent, 2.0f);
+        }
+        ImGui::Dummy(size);
+    }
+    ImGui::SameLine(0.0f, 12.0f * g_scale);
     ImGui::PushFont(g_fontSmall);
     if (b.mix.duck && red < -0.2f) {
-        ImGui::TextColored(theme::toVec(theme::kAccent), "-%.1f dB right now", -red);
+        ImGui::TextColored(theme::toVec(theme::kAccent), "-%.1f dB", -red);
     } else {
-        mix::textDim("Not ducking");
+        mix::textDim("not ducking");
     }
     ImGui::PopFont();
     ImGui::EndDisabled();

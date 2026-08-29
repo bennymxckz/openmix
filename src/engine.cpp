@@ -126,7 +126,6 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
             // Self-monitoring starts silent -- monitorGain, not gain: hearing
             // your own voice unasked is startling and on speakers it feeds
             // back. The level applications hear stays where the user put it.
-            mic_.setActivity(&micActivity_);
             if (mic_.start(&b.ring, cfg_.micMatch, micErr)) {
                 micDeviceName_ = mic_.deviceName();
             } else {
@@ -269,6 +268,7 @@ bool Engine::setMicDevice(const std::string& match, std::string& err) {
             ring = &b.ring;
             mic_.setEq(&b.eq, &b.strip);
             mic_.setDynamics(&b.mic, &b.micChain);
+            mic_.setActivity(&micActivity_);
             mic_.setMonitor(&b.stream);
             break;
         }
