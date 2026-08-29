@@ -108,22 +108,41 @@ If old entries have accumulated from earlier versions, clear them with
 
 - Four channels by default, and the set is editable — Sonar's are fixed.
   Each channel becomes its own pair of Windows devices.
-- Independent **headphone** and **stream** levels per channel, plus mute and
-  solo. Solo affects monitoring only, never the stream.
+- One fader per channel, in **percent**, so the whole travel is usable. A dB
+  fader spends most of its length on levels nobody wants.
+- **Its own output device per channel**, or one for all of them — the Link
+  toggle decides. Chat in your headset, media on your speakers, if you like.
+- Mute and solo. Solo affects monitoring only, never the stream.
 - Level meters on a dB scale with peak hold and a latching clip indicator.
-- Faders take the scroll wheel (1 dB a notch, a fifth of that with Ctrl) and
-  reset to unity on double-click.
+- Faders take the scroll wheel (2% a notch, a fifth of that with Ctrl) and
+  reset to full on double-click.
 
-**Processing**
+**Per-channel pages**
 
-- Per-channel EQ: high-pass and three parametric bands, with a response curve
-  drawn from the coefficients actually in use.
+Clicking a channel opens its own page.
+
+- **EQ**: high-pass and three parametric bands, with a response curve drawn
+  from the coefficients actually in use.
+- **Presets**, saved by name and shared across channels, so a curve worked out
+  on the microphone can be dropped onto anything.
+- **Ducking**: pull a channel down while you are talking, with the depth and
+  the recovery time under your control, and a readout of the reduction being
+  applied so it can be set against real speech. Sonar has no equivalent.
+- **Balance**, **mono** fold-down, and a **delay** up to 250 ms for lining a
+  channel up against video that arrives late.
+- A **limiter** per channel, so one loud moment cannot clip the recording.
 - Microphone noise gate and compressor, applied on the way in so the virtual
   microphone and your own monitoring agree.
-- Microphone self-monitoring, silent by default.
+- Microphone self-monitoring, silent by default and levelled separately from
+  what applications hear.
 
 **Living with it**
 
+- **openmix can take over the Windows defaults**, the way Sonar does, so
+  applications land on the right channel without being told. Windows keeps a
+  separate Communications default that Discord and Teams follow, which is what
+  puts chat on the Chat channel while everything else goes to Game. The
+  previous defaults are restored on exit.
 - Each strip names the applications playing to it, so routing can be
   confirmed rather than assumed. A channel with nothing on it says so, and
   clicking it opens the Windows page where applications are assigned.
@@ -145,8 +164,9 @@ build\openmix-cli.exe --selftest Game 60   ...for longer, to catch drift
 ```
 
 `--dsptest` is pure arithmetic — no devices, no audio hardware — so it runs in
-CI on every push. It checks the real frequency response of every filter and
-the gain reduction of the gate and compressor against theory.
+CI on every push. It checks the real frequency response of every filter, the
+gain reduction of the gate and compressor, and the balance, mono fold, delay,
+limiter ceiling and duck depth, all against theory.
 
 `--selftest` plays a tone into a channel's playback side and records it from
 the same channel's capture side, then reports frame rate against real time,

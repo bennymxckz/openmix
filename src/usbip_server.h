@@ -16,6 +16,7 @@
 
 #include "ring.h"
 #include "dsp.h"
+#include "dynamics.h"
 #include "usb_audio.h"
 
 // One exported device, paired with the bus it feeds.
@@ -32,6 +33,9 @@ struct VirtualEndpoint {
     // hear the same processed channel.
     dsp::EqParams* eq = nullptr;
     dsp::ChannelStrip* strip = nullptr;
+    const dsp::MixParams* mix = nullptr;
+    dsp::MixChain* mixChain = nullptr;
+    const std::atomic<float>* activity = nullptr;   // microphone, 0..1
     std::string busid;               // e.g. "1-1"
     std::atomic<bool> attached{false};
     std::atomic<unsigned long long> framesIn{0};

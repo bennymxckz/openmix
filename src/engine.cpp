@@ -67,6 +67,7 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
         b.stream.reset(kSampleRate / 4, kChannels);   // stream send, or mic monitor
         b.strip.prepare(kSampleRate);
         b.micChain.prepare(kSampleRate);
+        b.mixChain.prepare(kSampleRate);
     }
 
     if (!rebuildOutputs(err)) return false;
@@ -96,6 +97,9 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
             ep->streamMuted = &buses_[i].muted;
             ep->eq          = &buses_[i].eq;
             ep->strip       = &buses_[i].strip;
+            ep->mix         = &buses_[i].mix;
+            ep->mixChain    = &buses_[i].mixChain;
+            ep->activity    = &micActivity_;
         }
         ep->busid = "1-" + std::to_string(i + 1);
         endpoints_.push_back(std::move(ep));
@@ -117,10 +121,12 @@ bool Engine::start(const EngineConfig& cfg, std::string& err) {
             std::string micErr;
             mic_.setEq(&b.eq, &b.strip);
             mic_.setDynamics(&b.mic, &b.micChain);
+            mic_.setActivity(&micActivity_);
             mic_.setMonitor(&b.stream);
-            // Self-monitoring starts silent: hearing your own voice unasked is
-            // startling, and on speakers it feeds back.
-            b.gain = 0.0f;
+            // Self-monitoring starts silent -- monitorGain, not gain: hearing
+            // your own voice unasked is startling and on speakers it feeds
+            // back. The level applications hear stays where the user put it.
+            mic_.setActivity(&micActivity_);
             if (mic_.start(&b.ring, cfg_.micMatch, micErr)) {
                 micDeviceName_ = mic_.deviceName();
             } else {

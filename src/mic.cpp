@@ -98,6 +98,29 @@ void MicCapture::setEq(dsp::EqParams* eq, dsp::ChannelStrip* strip) {
     strip_ = strip;
 }
 
+void MicCapture::setActivity(std::atomic<float>* activity) {
+    activity_ = activity;
+}
+
+// How open the microphone is, 0..1, for channels that duck under it.
+//
+// Deliberately not the gate's own gain: ducking has to work whether or not the
+// gate is switched on. It reuses the gate threshold when there is one, because
+// that is already the user's answer to "this is me talking", and falls back to
+// a level well under speech but over room noise.
+void MicCapture::publishActivity(const float* samples, size_t count) {
+    if (!activity_) return;
+    float peak = 0.0f;
+    for (size_t i = 0; i < count; ++i) peak = (std::max)(peak, std::fabs(samples[i]));
+
+    const float openDb = (mic_ && mic_->gate.enabled) ? mic_->gate.thresholdDb : -40.0f;
+    const float peakDb = peak > 1e-6f ? 20.0f * std::log10(peak) : -120.0f;
+    // Fully in over a 12 dB window above the threshold, so a quiet word does
+    // not slam the music down as hard as a shout.
+    const float v = std::clamp((peakDb - openDb) / 12.0f, 0.0f, 1.0f);
+    activity_->store(v, std::memory_order_relaxed);
+}
+
 void MicCapture::setDynamics(dsp::MicParams* mic, dsp::MicChain* chain) {
     mic_ = mic;
     micChain_ = chain;
@@ -307,9 +330,11 @@ bool MicCapture::captureOnce() {
                         // about to remove.
                         if (wantEq) strip_->process(*eq_, work.data(), frames, kChannels);
                         if (wantDyn) micChain_->process(*mic_, work.data(), frames, kChannels);
+                        publishActivity(work.data(), samples);
                         sink_->write(work.data(), samples);
                         if (monitor_) monitor_->write(work.data(), samples);
                     } else {
+                        publishActivity(src, samples);
                         sink_->write(src, samples);
                         if (monitor_) monitor_->write(src, samples);
                     }

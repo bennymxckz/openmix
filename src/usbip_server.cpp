@@ -384,6 +384,12 @@ bool UsbipServer::handleStreaming(SOCKET s, VirtualEndpoint& ep) {
                     ep.strip->process(*ep.eq, scratch.data(),
                                       samples / usbaudio::kChannels, usbaudio::kChannels);
                 }
+                if (ep.mixChain && ep.mix) {
+                    const float act =
+                        ep.activity ? ep.activity->load(std::memory_order_relaxed) : 0.0f;
+                    ep.mixChain->process(*ep.mix, act, scratch.data(),
+                                         samples / usbaudio::kChannels, usbaudio::kChannels);
+                }
 
                 if (ep.sink) ep.sink->write(scratch.data(), samples);
                 // Duplex: the capture side serves the same audio at its own level.

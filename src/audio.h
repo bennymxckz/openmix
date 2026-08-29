@@ -97,6 +97,9 @@ struct Bus {
     // Gate and compressor, used on the microphone channel.
     dsp::MicParams mic;
     dsp::MicChain micChain;
+    // Pan, delay, limiter and ducking -- playback channels only.
+    dsp::MixParams mix;
+    dsp::MixChain mixChain;
 
     FloatRing ring;
     std::vector<std::unique_ptr<ProcessLoopbackCapture>> captures;
@@ -131,6 +134,7 @@ int runSelfTest(const std::string& channel, int seconds);
 
 // Offline filter checks: no devices, no audio hardware. Returns 0 on pass.
 int runDspTest();
+int runMixTest();
 
 // Windows keeps separate default endpoints per role: Console (0), Multimedia
 // (1) and Communications (2). Chat applications follow Communications, which
@@ -150,6 +154,8 @@ public:
     // the virtual microphone and any monitoring -- hears the same thing.
     void setEq(dsp::EqParams* eq, dsp::ChannelStrip* strip);
     void setDynamics(dsp::MicParams* mic, dsp::MicChain* chain);
+    // Where to publish how open the gate is, for channels that duck.
+    void setActivity(std::atomic<float>* activity);
     // Optional second destination for the processed signal, so you can hear
     // your own voice as applications will hear it.
     void setMonitor(FloatRing* monitor);
@@ -169,6 +175,9 @@ private:
     dsp::ChannelStrip* strip_ = nullptr;
     dsp::MicParams* mic_ = nullptr;
     dsp::MicChain* micChain_ = nullptr;
+    std::atomic<float>* activity_ = nullptr;
+
+    void publishActivity(const float* samples, size_t count);
     FloatRing* monitor_ = nullptr;
     std::string deviceMatch_;
     std::string deviceName_;

@@ -306,6 +306,15 @@ void saveSettings() {
             g_config.setFloat(e + names[i] + ".g", bands[i]->gainDb);
             g_config.setFloat(e + names[i] + ".q", bands[i]->q);
         }
+        const std::string m = k + "mix.";
+        g_config.setBool(m + "mono", b.mix.mono);
+        g_config.setFloat(m + "balance", b.mix.balance);
+        g_config.setFloat(m + "delay", b.mix.delayMs);
+        g_config.setBool(m + "limiter", b.mix.limiter);
+        g_config.setBool(m + "duck", b.mix.duck);
+        g_config.setFloat(m + "duckdb", b.mix.duckDb);
+        g_config.setFloat(m + "duckrel", b.mix.duckReleaseMs);
+
         if (b.isCapture) {
             g_config.setBool(k + "gate.on", b.mic.gate.enabled);
             g_config.setFloat(k + "gate.thresh", b.mic.gate.thresholdDb);
@@ -329,6 +338,15 @@ void applySettings() {
         b.muted       = g_config.getBool(k + "mute", false);
         b.monitorGain = g_config.getFloat(k + "monitor", 0.0f);
         b.outputDevice = g_config.get(k + "device");
+
+        const std::string m = k + "mix.";
+        b.mix.mono          = g_config.getBool(m + "mono", false);
+        b.mix.balance       = g_config.getFloat(m + "balance", 0.0f);
+        b.mix.delayMs       = g_config.getFloat(m + "delay", 0.0f);
+        b.mix.limiter       = g_config.getBool(m + "limiter", false);
+        b.mix.duck          = g_config.getBool(m + "duck", false);
+        b.mix.duckDb        = g_config.getFloat(m + "duckdb", -12.0f);
+        b.mix.duckReleaseMs = g_config.getFloat(m + "duckrel", 400.0f);
 
         const std::string e = k + "eq.";
         b.eq.enabled = g_config.getBool(e + "on", false);
@@ -1287,6 +1305,81 @@ void deletePreset(const std::string& name) {
     g_config.save();
 }
 
+// Everything a channel does to its own sound short of the equaliser. Playback
+// only: the microphone has its own dynamics section, and delaying or ducking
+// the source you are ducking against makes no sense.
+bool drawMixSection(Bus& b) {
+    bool changed = false;
+
+    ImGui::PushFont(g_fontHead);
+    ImGui::TextUnformatted("Output");
+    ImGui::PopFont();
+    ImGui::Spacing();
+
+    changed |= ImGui::Checkbox("Mono", &b.mix.mono);
+    tip("Fold both sides together -- useful for a chat application that\n"
+        "puts one person in each ear");
+
+    ImGui::SameLine(0.0f, 24.0f * g_scale);
+    changed |= ImGui::Checkbox("Limiter", &b.mix.limiter);
+    tip("Brick wall just under full scale, so one loud moment cannot clip\n"
+        "the recording");
+
+    ImGui::Spacing();
+    ImGui::SetNextItemWidth(-150.0f * g_scale);
+    float bal = b.mix.balance * 100.0f;
+    if (ImGui::SliderFloat("Balance", &bal, -100.0f, 100.0f,
+                           std::fabs(bal) < 1.0f ? "Centre"
+                                                 : (bal < 0 ? "%.0f left" : "%.0f right"))) {
+        b.mix.balance = std::clamp(bal, -100.0f, 100.0f) / 100.0f;
+        changed = true;
+    }
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) { b.mix.balance = 0.0f; changed = true; }
+    tip("Right-click to centre");
+
+    ImGui::SetNextItemWidth(-150.0f * g_scale);
+    if (ImGui::SliderFloat("Delay", &b.mix.delayMs, 0.0f, 250.0f,
+                           b.mix.delayMs < 0.5f ? "None" : "%.0f ms")) {
+        changed = true;
+    }
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) { b.mix.delayMs = 0.0f; changed = true; }
+    tip("Hold this channel back to line it up with video that arrives late.\n"
+        "Right-click to clear");
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::PushFont(g_fontHead);
+    ImGui::TextUnformatted("Duck under the microphone");
+    ImGui::PopFont();
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("##duckon", &b.mix.duck);
+    ImGui::PushFont(g_fontSmall);
+    mix::textDim("Pull this channel down while you are talking. Nothing Sonar does.");
+    ImGui::PopFont();
+
+    ImGui::BeginDisabled(!b.mix.duck);
+    ImGui::SetNextItemWidth(-150.0f * g_scale);
+    changed |= ImGui::SliderFloat("How far down", &b.mix.duckDb, -40.0f, -1.0f, "%.0f dB");
+    ImGui::SetNextItemWidth(-150.0f * g_scale);
+    changed |= ImGui::SliderFloat("Come back over", &b.mix.duckReleaseMs, 50.0f, 2000.0f, "%.0f ms");
+
+    // The reduction actually being applied, so the amount can be set against
+    // real speech instead of guessed at.
+    const float red = b.mixChain.duckReductionDb();
+    ImGui::PushFont(g_fontSmall);
+    if (b.mix.duck && red < -0.2f) {
+        ImGui::TextColored(theme::toVec(theme::kAccent), "-%.1f dB right now", -red);
+    } else {
+        mix::textDim("Not ducking");
+    }
+    ImGui::PopFont();
+    ImGui::EndDisabled();
+
+    return changed;
+}
+
 void drawChannelPage(size_t index, Bus& b) {
     const ImU32 accent = theme::channelColor(index);
 
@@ -1345,6 +1438,17 @@ void drawChannelPage(size_t index, Bus& b) {
     ImGui::PopStyleColor();
 
     ImGui::Dummy(ImVec2(0, 10.0f * g_scale));
+
+    // ---- output shaping ----
+    if (!b.isCapture) {
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::toVec(theme::kPanel));
+        ImGui::BeginChild("mix", ImVec2(0, 0),
+                          ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
+        if (drawMixSection(b)) saveSettings();
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, 10.0f * g_scale));
+    }
 
     // ---- processing ----
     ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::toVec(theme::kPanel));

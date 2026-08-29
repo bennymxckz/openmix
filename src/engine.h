@@ -4,6 +4,7 @@
 // microphone capture, so both the console and GUI front ends drive the same
 // object rather than duplicating setup.
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -74,6 +75,9 @@ private:
     // carries every channel that has not been routed elsewhere.
     std::vector<std::unique_ptr<MonitorOutput>> outputs_;
     MicCapture mic_;
+    // How open the microphone is, 0..1. Written by the capture thread and
+    // read by every channel that ducks under it.
+    std::atomic<float> micActivity_{0.0f};
     std::string micDeviceName_;
     bool renamedOk_ = true;
     bool usbipMissing_ = false;

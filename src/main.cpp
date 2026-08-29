@@ -391,6 +391,7 @@ int main(int argc, char** argv) {
         int rc = runDspTest();
         std::printf("\n");
         rc |= runDynamicsTest();
+        rc |= runMixTest();
         ::CoUninitialize();
         return rc;
     }

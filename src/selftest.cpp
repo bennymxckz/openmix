@@ -473,3 +473,136 @@ int runDynamicsTest() {
     std::printf("\n%s\n", ok ? "PASS - all dynamics checks" : "FAIL");
     return ok ? 0 : 1;
 }
+
+// ---------------------------------------------------------------------------
+// Output shaping: balance, mono, delay, limiter, ducking.
+
+namespace {
+
+// Runs a steady tone through the mix chain and reports the RMS of one channel
+// in dBFS. `left` and `right` let a test feed the two sides differently, which
+// is the only way to see balance and mono do anything.
+double mixLevelDb(const dsp::MixParams& p, float activity, int channel,
+                  double left = 0.5, double right = 0.5) {
+    dsp::MixChain chain;
+    chain.prepare(kSampleRate);
+
+    const size_t frames = 48000;                 // a full second, so the
+    std::vector<float> buf(frames * kChannels);  // duck settles and the delay
+    const double step = 2.0 * 3.14159265358979 * 440.0 / kSampleRate;  // fills
+    for (size_t i = 0; i < frames; ++i) {
+        const float v = static_cast<float>(std::sin(step * static_cast<double>(i)));
+        buf[i * kChannels] = static_cast<float>(v * left);
+        if (kChannels > 1) buf[i * kChannels + 1] = static_cast<float>(v * right);
+    }
+    chain.process(p, activity, buf.data(), frames, kChannels);
+
+    double sumSq = 0.0;
+    const size_t from = frames / 2;              // measure after settling
+    for (size_t i = from; i < frames; ++i) {
+        const double v = buf[i * kChannels + channel];
+        sumSq += v * v;
+    }
+    const double rms = std::sqrt(sumSq / static_cast<double>(frames - from));
+    return rms > 1e-9 ? 20.0 * std::log10(rms) : -120.0;
+}
+
+}  // namespace
+
+int runMixTest() {
+    std::printf("\nOutput shaping at %u Hz\n\n", kSampleRate);
+    bool ok = true;
+
+    // A unit sine at half amplitude is -9.03 dBFS RMS. Everything below is
+    // measured against that.
+    const double ref = 20.0 * std::log10(0.5 / std::sqrt(2.0));
+
+    {
+        dsp::MixParams p;
+        ok &= checkDb("untouched chain passes audio unchanged", mixLevelDb(p, 0.0f, 0), ref, 0.05);
+        ok &= checkDb("...and does not duck without being asked",
+                      mixLevelDb(p, 1.0f, 0), ref, 0.05);
+    }
+    {
+        dsp::MixParams p;
+        p.balance = 1.0f;                        // hard right
+        ok &= checkDb("hard right silences the left", mixLevelDb(p, 0.0f, 0), -120.0, 1.0);
+        ok &= checkDb("hard right leaves the right alone", mixLevelDb(p, 0.0f, 1), ref, 0.05);
+    }
+    {
+        dsp::MixParams p;
+        p.balance = -0.5f;                       // half left
+        ok &= checkDb("half left drops the right 6 dB", mixLevelDb(p, 0.0f, 1), ref - 6.02, 0.1);
+    }
+    {
+        // One side only: mono has to put half of it in each ear.
+        dsp::MixParams p;
+        p.mono = true;
+        ok &= checkDb("mono folds a one-sided source into both",
+                      mixLevelDb(p, 0.0f, 1, 0.5, 0.0), ref - 6.02, 0.1);
+    }
+    {
+        dsp::MixParams p;
+        p.duck = true;
+        p.duckDb = -12.0f;
+        ok &= checkDb("full activity ducks by the amount set",
+                      mixLevelDb(p, 1.0f, 0), ref - 12.0, 0.3);
+        ok &= checkDb("half activity ducks half as far",
+                      mixLevelDb(p, 0.5f, 0), ref - 6.0, 0.3);
+        p.duck = false;
+        ok &= checkDb("ducking off ignores the microphone",
+                      mixLevelDb(p, 1.0f, 0), ref, 0.05);
+    }
+    {
+        // The delay must move audio in time without changing its level.
+        dsp::MixParams p;
+        p.delayMs = 100.0f;
+        ok &= checkDb("delay preserves level", mixLevelDb(p, 0.0f, 0), ref, 0.05);
+
+        dsp::MixChain chain;
+        chain.prepare(kSampleRate);
+        const size_t frames = 12000;                 // comfortably past 100 ms
+        std::vector<float> buf(frames * kChannels, 0.0f);
+        for (unsigned c = 0; c < kChannels; ++c) buf[c] = 1.0f;   // one impulse
+        chain.process(p, 0.0f, buf.data(), frames, kChannels);
+
+        size_t at = 0;
+        bool found = false;
+        for (size_t i = 0; i < frames; ++i) {
+            if (std::fabs(buf[i * kChannels]) > 0.5f) { at = i; found = true; break; }
+        }
+        const double ms = 1000.0 * static_cast<double>(at) / kSampleRate;
+        const bool delayOk = found && std::fabs(ms - 100.0) < 1.0;
+        std::printf("  %-44s %6.1f ms (want 100.0 +/- 1.0)  %s\n",
+                    "100 ms delay lands the impulse late", ms, delayOk ? "PASS" : "FAIL");
+        ok &= delayOk;
+    }
+    {
+        // Loud in, and it must not come out over the ceiling.
+        dsp::MixParams p;
+        p.limiter = true;
+        dsp::MixChain chain;
+        chain.prepare(kSampleRate);
+        const size_t frames = 48000;
+        std::vector<float> buf(frames * kChannels);
+        const double step = 2.0 * 3.14159265358979 * 440.0 / kSampleRate;
+        for (size_t i = 0; i < frames; ++i) {
+            const float v = static_cast<float>(std::sin(step * static_cast<double>(i)) * 4.0);
+            for (unsigned c = 0; c < kChannels; ++c) buf[i * kChannels + c] = v;
+        }
+        chain.process(p, 0.0f, buf.data(), frames, kChannels);
+        float peak = 0.0f;
+        for (size_t i = frames / 2; i < frames * kChannels; ++i) {
+            peak = (std::max)(peak, std::fabs(buf[i]));
+        }
+        const double peakDb = 20.0 * std::log10((std::max)(peak, 1e-6f));
+        const bool limOk = peakDb <= 0.0;
+        std::printf("  %-44s %+6.2f dBFS (must not exceed 0)  %s\n",
+                    "limiter holds a 4x signal under full scale", peakDb,
+                    limOk ? "PASS" : "FAIL");
+        ok &= limOk;
+    }
+
+    std::printf("\n%s\n", ok ? "PASS - all output shaping checks" : "FAIL");
+    return ok ? 0 : 1;
+}
