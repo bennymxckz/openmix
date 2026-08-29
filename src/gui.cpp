@@ -71,6 +71,7 @@ bool g_linkDevices = true;
 // -1 is the mixer; anything else is that channel's own page.
 int g_page = -1;
 char g_presetName[40] = {};
+char g_profileName[40] = {};
 // The preset each channel is showing, so the combo can say so rather than
 // asking every time. Empty means the curve has been edited since.
 std::vector<std::string> g_busPreset;
@@ -958,7 +959,11 @@ void drawStrip(size_t index, Bus& b, bool attached, float rate, float height) {
     ImGui::Dummy(ImVec2(0, 6.0f * g_scale));
 
     ImGui::SetCursorPosX(12.0f * g_scale);
-    const bool dspOn = b.eq.enabled || b.mic.gate.enabled || b.mic.comp.enabled;
+    // Lit whenever the channel is doing something to its sound, so a
+    // forgotten duck or limiter is visible from the mixer.
+    const bool dspOn = b.eq.enabled || b.mic.gate.enabled || b.mic.comp.enabled ||
+                       b.mix.duck || b.mix.limiter || b.mix.mono ||
+                       b.mix.balance != 0.0f || b.mix.delayMs >= 0.5f;
     if (mix::pillButton(b.muted ? "MUTED" : "MUTE", b.muted,
                         ImVec2(48.0f * g_scale, 24.0f * g_scale), theme::kMuted)) {
         b.muted = !b.muted;
@@ -1048,6 +1053,68 @@ void endCard() {
     ImGui::EndChild();
     ImGui::PopStyleColor();
     ImGui::Dummy(ImVec2(0, 10.0f * g_scale));
+}
+
+// ---------------------------------------------------------------------------
+// Profiles: the whole mixer saved under a name.
+//
+// A streaming setup and a "just playing" setup differ in more than one
+// control -- levels, ducking, which device each channel goes to -- and setting
+// them back by hand every time is the sort of chore that ends with people not
+// bothering. A profile is a copy of every bus.* key under profile.<name>.*,
+// which is why the config is a flat map of strings rather than a struct.
+
+std::vector<std::string> profileNames() {
+    std::vector<std::string> out;
+    for (const auto& key : g_config.keys()) {
+        if (key.rfind("profile.", 0) != 0) continue;
+        const size_t dot = key.find(".bus.", 8);
+        if (dot == std::string::npos) continue;
+        const std::string name = key.substr(8, dot - 8);
+        if (std::find(out.begin(), out.end(), name) == out.end()) out.push_back(name);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+void saveProfile(const std::string& name) {
+    saveSettings();                       // capture what is on screen first
+    const std::string dst = "profile." + name + ".";
+    g_config.removePrefix(dst);           // replacing, not merging
+    for (const auto& key : g_config.keys()) {
+        if (key.rfind("bus.", 0) != 0) continue;
+        g_config.set(dst + key, g_config.get(key));
+    }
+    g_config.save();
+}
+
+void loadProfile(const std::string& name) {
+    const std::string src = "profile." + name + ".";
+    // Copy first, then apply: writing into the map while walking it is how
+    // you get a half-applied profile.
+    std::vector<std::pair<std::string, std::string>> restore;
+    for (const auto& key : g_config.keys()) {
+        if (key.rfind(src, 0) != 0) continue;
+        restore.emplace_back(key.substr(src.size()), g_config.get(key));
+    }
+    if (restore.empty()) return;
+
+    // Channels the profile does not mention keep what they have; a profile
+    // saved before a channel existed should not silently blank it.
+    for (const auto& [k, v] : restore) g_config.set(k, v);
+    applySettings();
+
+    // Output devices live in the profile too, so the engine has to be told.
+    std::string err;
+    for (size_t i = 0; i < g_engine.buses().size(); ++i) {
+        g_engine.setChannelDevice(i, g_engine.buses()[i].outputDevice, err);
+    }
+    g_config.save();
+}
+
+void deleteProfile(const std::string& name) {
+    g_config.removePrefix("profile." + name + ".");
+    g_config.save();
 }
 
 void drawSettings() {
@@ -1151,6 +1218,45 @@ void drawSettings() {
         g_channels.erase(g_channels.begin() + removeAt);
         g_config.set("channels", joinChannels(g_channels));
         restartEngine();
+    }
+
+    endCard();
+    beginCard("Profiles",
+              "The whole mixer under a name -- levels, devices, equalisers and all.");
+
+    const auto profiles = profileNames();
+    if (profiles.empty()) {
+        ImGui::PushFont(g_fontSmall);
+        mix::textDim("Set the mixer up the way you want it, name it, and it is one\n"
+                     "click away from then on. A streaming layout and a casual one\n"
+                     "rarely want the same levels.");
+        ImGui::PopFont();
+        ImGui::Spacing();
+    }
+    for (const auto& n : profiles) {
+        ImGui::PushID(n.c_str());
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(n.c_str());
+        ImGui::SameLine(250.0f * g_scale);
+        if (ImGui::SmallButton("Load")) loadProfile(n);
+        tip("Put every channel back the way this profile has them");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Overwrite")) saveProfile(n);
+        tip("Replace it with the mixer as it stands now");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Delete")) deleteProfile(n);
+        ImGui::PopID();
+    }
+
+    ImGui::Spacing();
+    ImGui::SetNextItemWidth(200.0f * g_scale);
+    const bool profEnter = ImGui::InputTextWithHint("##newprof", "Save the mixer as...",
+                                                    g_profileName, sizeof(g_profileName),
+                                                    ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    if ((ImGui::Button("Save##prof") || profEnter) && g_profileName[0] != 0) {
+        saveProfile(g_profileName);
+        g_profileName[0] = 0;
     }
 
     endCard();

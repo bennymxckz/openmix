@@ -187,6 +187,15 @@ public:
     // with ducking off ignores it.
     void process(const MixParams& p, float activity,
                  float* samples, size_t frames, unsigned channels) {
+        // A channel with nothing switched on must be bit-transparent, not
+        // merely close, and must not pay for a per-sample loop to prove it.
+        if (!p.mono && !p.limiter && !p.duck &&
+            p.balance == 0.0f && p.delayMs < 0.5f) {
+            duckGain_ = 1.0f;
+            limGain_ = 1.0f;
+            return;
+        }
+
         // Ducking first: it is a level move, and doing it before the limiter
         // means the limiter sees what will actually be heard.
         // Interpolated in dB, not in amplitude: half activity should be half

@@ -519,9 +519,9 @@ int runMixTest() {
 
     {
         dsp::MixParams p;
-        ok &= checkDb("untouched chain passes audio unchanged", mixLevelDb(p, 0.0f, 0), ref, 0.05);
+        ok &= checkDb("untouched chain passes audio unchanged", mixLevelDb(p, 0.0f, 0), ref, 0.001);
         ok &= checkDb("...and does not duck without being asked",
-                      mixLevelDb(p, 1.0f, 0), ref, 0.05);
+                      mixLevelDb(p, 1.0f, 0), ref, 0.001);
     }
     {
         dsp::MixParams p;
