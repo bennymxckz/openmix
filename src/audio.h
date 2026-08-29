@@ -132,6 +132,13 @@ int runSelfTest(const std::string& channel, int seconds);
 // Offline filter checks: no devices, no audio hardware. Returns 0 on pass.
 int runDspTest();
 
+// Windows keeps separate default endpoints per role: Console (0), Multimedia
+// (1) and Communications (2). Chat applications follow Communications, which
+// is how a Chat channel can capture Discord without touching its settings.
+bool defaultDeviceControlAvailable();
+bool setDefaultEndpoint(const std::wstring& deviceId, int role);
+std::wstring defaultEndpointId(bool capture, int role);
+
 int runDynamicsTest();
 
 // Pulls audio from a real input device into a ring, which the USB capture

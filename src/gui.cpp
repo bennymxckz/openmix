@@ -66,6 +66,13 @@ char g_newChannel[32] = {};
 bool g_autostart = false;
 bool g_showSettings = false;
 bool g_showWelcome = false;
+bool g_ownDefaults = false;
+
+// Defined further down, but used by the engine restart and shutdown paths
+// above them.
+void restoreDefaults();
+void claimDefaults();
+void rememberDefaults();
 std::string g_channelError;
 bool g_micHotkey = false;
 bool g_hotkeyFailed = false;
@@ -424,7 +431,6 @@ void setMicHotkey(bool on) {
 }
 
 void restartEngine() {
-    saveWindowPlacement();
     saveSettings();
     g_engine.stop();
     EngineConfig cfg;
@@ -432,7 +438,16 @@ void restartEngine() {
     cfg.outMatch = g_config.get("output");
     cfg.micMatch = g_config.get("mic");
     g_startError.clear();
-    if (g_engine.start(cfg, g_startError)) applySettings();
+    if (g_engine.start(cfg, g_startError)) {
+        applySettings();
+        // The endpoints were republished, so the defaults point at devices
+        // that no longer exist until they are claimed again.
+        if (g_ownDefaults) {
+            g_outDevices = listRenderDevices();
+            g_micDevices = listCaptureDevices();
+            claimDefaults();
+        }
+    }
 }
 
 // Levels are a percentage of full scale, linear in amplitude.
@@ -440,6 +455,105 @@ float percentFromGain(float g) { return std::clamp(g, 0.0f, 1.0f) * 100.0f; }
 float gainFromPercent(float p) { return std::clamp(p, 0.0f, 100.0f) / 100.0f; }
 
 void openWindowsAppVolume();
+void restoreDefaults();
+void claimDefaults();
+
+// ---- Windows default devices -------------------------------------------
+
+std::string narrowW(const std::wstring& w) {
+    if (w.empty()) return {};
+    const int n = ::WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
+                                        nullptr, 0, nullptr, nullptr);
+    std::string s(static_cast<size_t>(n), char{});
+    ::WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), s.data(), n, nullptr, nullptr);
+    return s;
+}
+
+std::wstring widenS(const std::string& s) {
+    if (s.empty()) return {};
+    const int n = ::MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+    std::wstring w(static_cast<size_t>(n), wchar_t{});
+    ::MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), w.data(), n);
+    return w;
+}
+
+bool isOpenmixId(const std::wstring& id) {
+    for (const auto& d : g_outDevices) if (d.id == id) return d.isOpenmix;
+    for (const auto& d : g_micDevices) if (d.id == id) return d.isOpenmix;
+    return false;
+}
+
+std::string defaultKey(bool capture, int role) {
+    return std::string("prevDefault.") + (capture ? "in." : "out.") + std::to_string(role);
+}
+
+// Remember what the defaults were before openmix took them, so they can be
+// handed back. An openmix device is never recorded as the previous one -- that
+// would make "restore" a no-op after the first restart.
+void rememberDefaults() {
+    for (int cap = 0; cap < 2; ++cap) {
+        for (int role = 0; role < 3; ++role) {
+            const std::wstring id = defaultEndpointId(cap != 0, role);
+            if (id.empty() || isOpenmixId(id)) continue;
+            g_config.set(defaultKey(cap != 0, role), narrowW(id));
+        }
+    }
+}
+
+void restoreDefaults() {
+    for (int cap = 0; cap < 2; ++cap) {
+        for (int role = 0; role < 3; ++role) {
+            const std::wstring id = widenS(g_config.get(defaultKey(cap != 0, role)));
+            if (!id.empty()) setDefaultEndpoint(id, role);
+        }
+    }
+}
+
+// Everything general goes to the first channel, chat applications to the
+// second via the separate Communications role, recording to the microphone.
+// That is how Discord lands on Chat without touching Discord's settings.
+void claimDefaults() {
+    auto find = [](const std::vector<RenderDevice>& list, const std::string& want) {
+        for (const auto& d : list) {
+            if (d.name.find("Openmix - " + want) != std::string::npos) return d.id;
+        }
+        return std::wstring{};
+    };
+
+    const std::string general = g_channels.empty() ? std::string("Game") : g_channels[0];
+    const std::string chat = g_channels.size() > 1 ? g_channels[1] : general;
+
+    const std::wstring gen = find(g_outDevices, general);
+    const std::wstring cht = find(g_outDevices, chat);
+    const std::wstring mic = find(g_micDevices, "Mic");
+
+    if (!gen.empty()) {
+        setDefaultEndpoint(gen, 0);   // Console
+        setDefaultEndpoint(gen, 1);   // Multimedia
+    }
+    if (!cht.empty()) setDefaultEndpoint(cht, 2);   // Communications
+    if (!mic.empty()) {
+        for (int role = 0; role < 3; ++role) setDefaultEndpoint(mic, role);
+    }
+}
+
+void setOwnDefaults(bool on) {
+    // The device lists have to be current or the openmix endpoints will not be
+    // found; they only appear once the engine has attached them.
+    g_outDevices = listRenderDevices();
+    g_micDevices = listCaptureDevices();
+
+    if (on) {
+        rememberDefaults();
+        claimDefaults();
+    } else {
+        restoreDefaults();
+    }
+    g_ownDefaults = on;
+    g_config.setBool("ownDefaults", on);
+    g_config.save();
+}
+
 
 void tip(const char* text) {
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
@@ -969,6 +1083,22 @@ void drawSettings() {
         ImGui::PopFont();
     }
 
+    bool own = g_ownDefaults;
+    if (ImGui::Checkbox("Make openmix the default audio device", &own)) setOwnDefaults(own);
+    tip("Sends everything to the first channel, chat applications to the second,\n"
+        "and recording to the microphone. Your previous devices are restored\n"
+        "when this is turned off or openmix quits.");
+    ImGui::PushFont(g_fontSmall);
+    if (g_ownDefaults && g_channels.size() > 1) {
+        mix::textDim("General audio to %s, chat applications to %s.",
+                     g_channels[0].c_str(), g_channels[1].c_str());
+    } else {
+        mix::textDim("Windows keeps a separate default for chat applications; "
+                     "openmix can use it.");
+    }
+    ImGui::PopFont();
+    ImGui::Spacing();
+
     if (ImGui::Button("Open Windows sound settings")) openWindowsAppVolume();
     tip("Where applications are pointed at a channel");
     ImGui::Spacing();
@@ -1337,6 +1467,18 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     cfg.micMatch = g_config.get("mic");
     if (g_engine.start(cfg, g_startError)) applySettings();
 
+    g_ownDefaults = g_config.getBool("ownDefaults", false);
+    if (g_ownDefaults) {
+        // The endpoints only exist once the engine has attached them.
+        g_outDevices = listRenderDevices();
+        g_micDevices = listCaptureDevices();
+        // Record what the defaults are before taking them, or there would be
+        // nothing to hand back on the way out. At this point they are still
+        // real devices: openmix's have only just appeared.
+        rememberDefaults();
+        claimDefaults();
+    }
+
     DWORD lastRateSample = ::GetTickCount();
     DWORD lastAppScan = 0;
     bool done = false;
@@ -1396,7 +1538,11 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
         g_occluded = (hr == DXGI_STATUS_OCCLUDED);
     }
 
+    saveWindowPlacement();
     saveSettings();
+    // Hand the defaults back before the devices disappear, or Windows is left
+    // pointing at endpoints that are about to stop existing.
+    if (g_ownDefaults) restoreDefaults();
     g_engine.stop();
 
     ImGui_ImplDX11_Shutdown();

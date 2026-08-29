@@ -157,6 +157,102 @@ int fixNames() {
     return failed ? 1 : 0;
 }
 
+// Point Windows at the openmix channels, the way Sonar does: everything
+// general goes to one channel, chat applications to another via the separate
+// Communications role, and recording to the virtual microphone.
+int takeOverDefaults(const std::string& general, const std::string& chat) {
+    if (!defaultDeviceControlAvailable()) {
+        std::printf("The Windows default-device interface is unavailable here.\n");
+        return 1;
+    }
+
+    auto findRender = [](const std::string& want) -> std::wstring {
+        for (const auto& d : listRenderDevices()) {
+            if (d.name.find("Openmix - " + want) != std::string::npos) return d.id;
+        }
+        return {};
+    };
+    auto findCapture = [](const std::string& want) -> std::wstring {
+        for (const auto& d : listCaptureDevices()) {
+            if (d.name.find("Openmix - " + want) != std::string::npos) return d.id;
+        }
+        return {};
+    };
+
+    const std::wstring gen = findRender(general);
+    const std::wstring cht = findRender(chat);
+    const std::wstring mic = findCapture("Mic");
+    if (gen.empty()) {
+        std::printf("No playback device for \"%s\". Is openmix running?\n", general.c_str());
+        return 1;
+    }
+
+    int done = 0;
+    // Console and Multimedia are what most applications follow.
+    if (setDefaultEndpoint(gen, 0)) ++done;
+    if (setDefaultEndpoint(gen, 1)) ++done;
+    // Communications is what chat applications follow.
+    if (!cht.empty() && setDefaultEndpoint(cht, 2)) ++done;
+    if (!mic.empty()) {
+        for (int role = 0; role < 3; ++role) {
+            if (setDefaultEndpoint(mic, role)) ++done;
+        }
+    }
+
+    std::printf("Set %d default endpoint(s): %s for general, %s for chat, Mic for recording.\n",
+                done, general.c_str(), cht.empty() ? "(none)" : chat.c_str());
+    return done ? 0 : 1;
+}
+
+// Point the Windows defaults at a real device again. Taking them over is only
+// safe if giving them back is one command away.
+int setDefaultsTo(const std::string& playback, const std::string& recording) {
+    int done = 0;
+    for (const auto& d : listRenderDevices()) {
+        if (d.isOpenmix || d.name.find(playback) == std::string::npos) continue;
+        for (int role = 0; role < 3; ++role) {
+            if (setDefaultEndpoint(d.id, role)) ++done;
+        }
+        std::printf("Playback -> %s\n", d.name.c_str());
+        break;
+    }
+    if (!recording.empty()) {
+        for (const auto& d : listCaptureDevices()) {
+            if (d.isOpenmix || d.name.find(recording) == std::string::npos) continue;
+            for (int role = 0; role < 3; ++role) {
+                if (setDefaultEndpoint(d.id, role)) ++done;
+            }
+            std::printf("Recording -> %s\n", d.name.c_str());
+            break;
+        }
+    }
+    if (!done) {
+        std::printf("Nothing matched. Try --list-devices for the exact names.\n");
+        return 1;
+    }
+    return 0;
+}
+
+// What Windows currently considers default, per role. Useful for checking
+// that a takeover did what it claimed.
+int showDefaults() {
+    const char* roles[] = { "Console      ", "Multimedia   ", "Communications" };
+    auto nameFor = [](const std::wstring& id, bool capture) {
+        for (const auto& d : (capture ? listCaptureDevices() : listRenderDevices())) {
+            if (d.id == id) return d.name;
+        }
+        return std::string("(unknown)");
+    };
+    for (int cap = 0; cap < 2; ++cap) {
+        std::printf("%s:\n", cap ? "Recording" : "Playback");
+        for (int role = 0; role < 3; ++role) {
+            const std::wstring id = defaultEndpointId(cap != 0, role);
+            std::printf("  %s  %s\n", roles[role], nameFor(id, cap != 0).c_str());
+        }
+    }
+    return 0;
+}
+
 bool busClaimsPid(const Bus& bus, DWORD pid, const std::vector<ProcEntry>& procs) {
     DWORD cur = pid;
     for (int depth = 0; depth < 12 && cur != 0; ++depth) {
@@ -181,6 +277,9 @@ int main(int argc, char** argv) {
     bool fixNames_ = false;
     bool selfTest = false;
     bool dspTest = false;
+    bool takeDefaults = false;
+    bool showDefaults_ = false;
+    std::string defaultPlayback, defaultRecording;
     std::string selfTestChannel = "Game";
     int selfTestSeconds = 5;
     bool noMic = false;
@@ -197,6 +296,13 @@ int main(int argc, char** argv) {
         if (a == "--list-devices") { listDevices = true; continue; }
         if (a == "--fix-names") { fixNames_ = true; continue; }
         if (a == "--dsptest") { dspTest = true; continue; }
+        if (a == "--take-defaults") { takeDefaults = true; continue; }
+        if (a == "--show-defaults") { showDefaults_ = true; continue; }
+        if (a == "--set-default" && i + 1 < argc) {
+            defaultPlayback = argv[++i];
+            if (i + 1 < argc && argv[i + 1][0] != 0x2D) defaultRecording = argv[++i];
+            continue;
+        }
         if (a == "--selftest") {
             selfTest = true;
             if (i + 1 < argc && argv[i + 1][0] != 0x2D) selfTestChannel = argv[++i];
@@ -262,6 +368,24 @@ int main(int argc, char** argv) {
 
     ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     ::timeBeginPeriod(1);   // the USB pacer sleeps in ~1 ms steps
+
+    if (!defaultPlayback.empty()) {
+        const int rc = setDefaultsTo(defaultPlayback, defaultRecording);
+        ::CoUninitialize();
+        return rc;
+    }
+
+    if (showDefaults_) {
+        const int rc = showDefaults();
+        ::CoUninitialize();
+        return rc;
+    }
+
+    if (takeDefaults) {
+        const int rc = takeOverDefaults("Game", "Chat");
+        ::CoUninitialize();
+        return rc;
+    }
 
     if (dspTest) {
         int rc = runDspTest();

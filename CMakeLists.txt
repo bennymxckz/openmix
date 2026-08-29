@@ -41,6 +41,7 @@ add_library(openmix_core STATIC
     src/engine.cpp
     src/config.cpp
     src/selftest.cpp
+    src/defaults.cpp
 )
 target_compile_definitions(openmix_core PUBLIC
     UNICODE _UNICODE
