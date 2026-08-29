@@ -150,6 +150,9 @@ Clicking a channel opens its own page.
 - Each strip names the applications playing to it, so routing can be
   confirmed rather than assumed. A channel with nothing on it says so, and
   clicking it opens the Windows page where applications are assigned.
+- **Profiles**: the whole mixer saved under a name — levels, mutes, output
+  devices, equalisers, ducking, all of it — so a streaming setup and a casual
+  one are one click apart instead of ten controls apart.
 - Optional global Ctrl+Alt+M to mute the microphone from anywhere, with the
   state visible from the tray.
 - Optional start with Windows, straight to the tray.
